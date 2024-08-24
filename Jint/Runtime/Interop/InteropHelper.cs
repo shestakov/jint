@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using Jint.Extensions;
 using Jint.Native;
 
@@ -86,16 +87,11 @@ internal sealed class InteropHelper
     /// <summary>
     /// Determines how well parameter type matches target method's type.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static int CalculateMethodParameterScore(Engine engine, ParameterInfo parameter, JsValue parameterValue)
     {
         var paramType = parameter.ParameterType;
         var objectValue = parameterValue.ToObject();
-        var objectValueType = objectValue?.GetType();
-
-        if (objectValueType == paramType)
-        {
-            return 0;
-        }
 
         if (objectValue is null)
         {
@@ -106,6 +102,23 @@ internal sealed class InteropHelper
             }
 
             return 0;
+        }
+
+        var objectValueType = objectValue.GetType();
+
+        if (objectValueType == paramType)
+        {
+            return 0;
+        }
+
+        if (paramType == typeof(Guid) && objectValueType == typeof(string))
+        {
+            return 1;
+        }
+
+        if (paramType == typeof(Guid?) && objectValueType == typeof(string))
+        {
+            return 1;
         }
 
         if (paramType == typeof(JsValue))
@@ -155,20 +168,20 @@ internal sealed class InteropHelper
         // not sure the best point to start generic type tests
         if (paramType.IsGenericParameter)
         {
-            var genericTypeAssignmentScore = IsAssignableToGenericType(objectValueType!, paramType);
+            var genericTypeAssignmentScore = IsAssignableToGenericType(objectValueType, paramType);
             if (genericTypeAssignmentScore.Score != -1)
             {
                 return genericTypeAssignmentScore.Score;
             }
         }
 
-        if (CanChangeType(objectValue, paramType))
-        {
-            // forcing conversion isn't ideal, but works, especially for int -> double for example
-            return 3;
-        }
+        // if (CanChangeType(objectValue, paramType))
+        // {
+        //     // forcing conversion isn't ideal, but works, especially for int -> double for example
+        //     return 3;
+        // }
 
-        foreach (var m in objectValueType!.GetOperatorOverloadMethods())
+        foreach (var m in objectValueType.GetOperatorOverloadMethods())
         {
             if (paramType.IsAssignableFrom(m.ReturnType) && m.Name is "op_Implicit" or "op_Explicit")
             {
@@ -191,6 +204,7 @@ internal sealed class InteropHelper
     /// Method's match score tells how far away it's from ideal candidate. 0 = ideal, bigger the the number,
     /// the farther away the candidate is from ideal match. Negative signals impossible match.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static int CalculateMethodScore(Engine engine, MethodDescriptor method, JsValue[] arguments)
     {
         if (method.Parameters.Length == 0 && arguments.Length == 0)
@@ -265,21 +279,21 @@ internal sealed class InteropHelper
                 && arguments.Length >= parameterInfos.Length - method.ParameterDefaultValuesCount)
             {
                 var score = CalculateMethodScore(engine, method, arguments);
-                if (score == 0)
+                switch (score)
                 {
-                    // perfect match
-                    yield return new MethodMatch(method, arguments);
-                    yield break;
+                    case 0:
+                        // perfect match
+                        yield return new MethodMatch(method, arguments, 0);
+                        yield break;
+                    case < 0:
+                        // discard
+                        continue;
+                    default:
+                        matchingByParameterCount ??= new List<MethodMatch>();
+                        matchingByParameterCount.Add(new MethodMatch(method, arguments, score));
+                        break;
                 }
 
-                if (score < 0)
-                {
-                    // discard
-                    continue;
-                }
-
-                matchingByParameterCount ??= new List<MethodMatch>();
-                matchingByParameterCount.Add(new MethodMatch(method, arguments, score));
             }
         }
 
