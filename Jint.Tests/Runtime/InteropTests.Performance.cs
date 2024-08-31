@@ -27,7 +27,7 @@ public partial class InteropTests
 
         sw.Stop();
 
-        _testOutputHelper.WriteLine($"{numberOfCalls} completed in {sw.Elapsed}");
+        Console.WriteLine($"{numberOfCalls} completed in {sw.Elapsed}");
     }
 
     private class Injected
