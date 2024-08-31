@@ -11,19 +11,25 @@ using Jint.Tests.Runtime.Domain;
 using Jint.Tests.Runtime.TestClasses;
 using MongoDB.Bson;
 using Shapes;
+using Xunit.Abstractions;
 
 namespace Jint.Tests.Runtime;
 
 public partial class InteropTests : IDisposable
 {
+    private readonly ITestOutputHelper _testOutputHelper;
     private readonly Engine _engine;
 
-    public InteropTests()
+    public InteropTests(ITestOutputHelper testOutputHelper)
     {
+        _testOutputHelper = testOutputHelper;
         _engine = new Engine(cfg => cfg.AllowClr(
                     typeof(Shape).GetTypeInfo().Assembly,
                     typeof(Console).GetTypeInfo().Assembly,
-                    typeof(File).GetTypeInfo().Assembly))
+                    typeof(File).GetTypeInfo().Assembly)
+                       .AddObjectConverter(new JintGuidConverter())
+                       .SetTypeConverter(e => new JintTypeConverter(e))
+                )
                 .SetValue("log", new Action<object>(Console.WriteLine))
                 .SetValue("assert", new Action<bool>(Assert.True))
                 .SetValue("equal", new Action<object, object>(Assert.Equal))
