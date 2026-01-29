@@ -22,7 +22,7 @@ namespace Jint.Collections;
 /// </summary>
 [DebuggerTypeProxy(typeof(DictionarySlimDebugView<>))]
 [DebuggerDisplay("Count = {Count}")]
-internal sealed class StringDictionarySlim<TValue> : IReadOnlyCollection<KeyValuePair<Key, TValue>>
+internal sealed class StringDictionarySlim<TValue> : DictionaryBase<TValue>, IReadOnlyCollection<KeyValuePair<Key, TValue>>
 {
     // We want to initialize without allocating arrays. We also want to avoid null checks.
     // Array.Empty would give divide by zero in modulo operation. So we use static one element arrays.
@@ -62,7 +62,7 @@ internal sealed class StringDictionarySlim<TValue> : IReadOnlyCollection<KeyValu
         _entries = new Entry[capacity];
     }
 
-    public int Count
+    public override int Count
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         get => _count;
@@ -79,34 +79,11 @@ internal sealed class StringDictionarySlim<TValue> : IReadOnlyCollection<KeyValu
         _entries = InitialEntries;
     }
 
-    public bool ContainsKey(Key key)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void SetOrUpdateValue<TState>(Key key, Func<TValue, TState, TValue> updater, TState state)
     {
-        Entry[] entries = _entries;
-        for (int i = _buckets[key.HashCode & (_buckets.Length-1)] - 1;
-             (uint)i < (uint)entries.Length; i = entries[i].next)
-        {
-            if (key.Name == entries[i].key.Name)
-                return true;
-        }
-
-        return false;
-    }
-
-    public bool TryGetValue(Key key, out TValue value)
-    {
-        Entry[] entries = _entries;
-        for (int i = _buckets[key.HashCode & (_buckets.Length - 1)] - 1;
-             (uint)i < (uint)entries.Length; i = entries[i].next)
-        {
-            if (key.Name == entries[i].key.Name)
-            {
-                value = entries[i].value;
-                return true;
-            }
-        }
-
-        value = default;
-        return false;
+        ref var currentValue = ref GetValueRefOrAddDefault(key, out _);
+        currentValue = updater(currentValue, state);
     }
 
     public bool Remove(Key key)
@@ -145,11 +122,22 @@ internal sealed class StringDictionarySlim<TValue> : IReadOnlyCollection<KeyValu
         return false;
     }
 
-    public void SetOrUpdateValue<TState>(Key key, Func<TValue, TState, TValue> updater, TState state)
+    public override ref TValue GetValueRefOrNullRef(Key key)
     {
-        ref var currentValue = ref GetOrAddValueRef(key);
-        currentValue = updater(currentValue, state);
+        Entry[] entries = _entries;
+        int bucketIndex = key.HashCode & (_buckets.Length - 1);
+        for (int i = _buckets[bucketIndex] - 1;
+             (uint) i < (uint) entries.Length; i = entries[i].next)
+        {
+            if (key.Name == entries[i].key.Name)
+            {
+                return ref entries[i].value;
+            }
+        }
+
+        return ref Unsafe.NullRef<TValue>();
     }
+
 
     // Not safe for concurrent _reads_ (at least, if either of them add)
     // For concurrent reads, prefer TryGetValue(key, out value)
@@ -159,18 +147,23 @@ internal sealed class StringDictionarySlim<TValue> : IReadOnlyCollection<KeyValu
     /// add or update a value in a single look up operation.
     /// </summary>
     /// <param name="key">Key to look for</param>
+    /// <param name="exists">Whether the value existed</param>
     /// <returns>Reference to the new or existing value</returns>
-    public ref TValue GetOrAddValueRef(Key key)
+    public override ref TValue GetValueRefOrAddDefault(Key key, out bool exists)
     {
         Entry[] entries = _entries;
         int bucketIndex = key.HashCode & (_buckets.Length - 1);
         for (int i = _buckets[bucketIndex] - 1;
-             (uint)i < (uint)entries.Length; i = entries[i].next)
+             (uint) i < (uint) entries.Length; i = entries[i].next)
         {
             if (key.Name == entries[i].key.Name)
+            {
+                exists = true;
                 return ref entries[i].value;
+            }
         }
 
+        exists = false;
         return ref AddKey(key, bucketIndex);
     }
 
@@ -179,7 +172,7 @@ internal sealed class StringDictionarySlim<TValue> : IReadOnlyCollection<KeyValu
         Entry[] entries = _entries;
         int bucketIndex = key.HashCode & (_buckets.Length - 1);
         for (int i = _buckets[bucketIndex] - 1;
-             (uint)i < (uint)entries.Length; i = entries[i].next)
+             (uint) i < (uint) entries.Length; i = entries[i].next)
         {
             if (key.Name == entries[i].key.Name)
             {
@@ -192,18 +185,12 @@ internal sealed class StringDictionarySlim<TValue> : IReadOnlyCollection<KeyValu
     }
 
     /// <summary>
-    /// Adds a new item and expects key to not to exist.
+    /// Adds a new item and expects key to not exist.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void AddDangerous(in Key key, TValue value)
     {
         AddKey(key, key.HashCode & (_buckets.Length - 1)) = value;
-    }
-
-    public ref TValue this[Key key]
-    {
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        get => ref GetOrAddValueRef(key);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -239,7 +226,7 @@ internal sealed class StringDictionarySlim<TValue> : IReadOnlyCollection<KeyValu
         Debug.Assert(_entries.Length == _count || _entries.Length == 1); // We only copy _count, so if it's longer we will miss some
         int count = _count;
         int newSize = _entries.Length * 2;
-        if ((uint)newSize > (uint)int.MaxValue) // uint cast handles overflow
+        if ((uint) newSize > int.MaxValue) // uint cast handles overflow
             throw new InvalidOperationException("Capacity Overflow");
 
         var entries = new Entry[newSize];

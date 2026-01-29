@@ -63,7 +63,8 @@ public partial class Engine
         private BuilderModule LoadFromBuilder(string specifier, ModuleBuilder moduleBuilder, ResolvedSpecifier moduleResolution)
         {
             var parsedModule = moduleBuilder.Parse();
-            var module = new BuilderModule(_engine, _engine.Realm, parsedModule, location: parsedModule.Program!.Location.SourceFile, async: false);
+            var hasTopLevelAwait = HoistingScope.HasTopLevelAwait(parsedModule.Program!);
+            var module = new BuilderModule(_engine, _engine.Realm, parsedModule, location: parsedModule.Program!.Location.SourceFile, async: hasTopLevelAwait);
             _modules[moduleResolution.Key] = module;
             moduleBuilder.BindExportedValues(module);
             _builders.Remove(specifier);
@@ -131,7 +132,7 @@ public partial class Engine
 
                 if (cyclicModule.Status != ModuleStatus.Evaluated)
                 {
-                    ExceptionHelper.ThrowNotSupportedException($"Error while evaluating module: Module is in an invalid state: '{cyclicModule.Status}'");
+                    Throw.NotSupportedException($"Error while evaluating module: Module is in an invalid state: '{cyclicModule.Status}'");
                 }
             }
 
@@ -148,7 +149,7 @@ public partial class Engine
         private JsValue EvaluateModule(string specifier, Module module)
         {
             var ownsContext = _engine._activeEvaluationContext is null;
-            _engine. _activeEvaluationContext ??= new EvaluationContext(_engine);
+            _engine._activeEvaluationContext ??= new EvaluationContext(_engine);
             JsValue evaluationResult;
             try
             {
@@ -165,20 +166,59 @@ public partial class Engine
             // This should instead be returned and resolved in ImportModule(specifier) only so Host.ImportModuleDynamically can use this promise
             if (evaluationResult is not JsPromise promise)
             {
-                ExceptionHelper.ThrowInvalidOperationException($"Error while evaluating module: Module evaluation did not return a promise: {evaluationResult.Type}");
+                Throw.InvalidOperationException($"Error while evaluating module: Module evaluation did not return a promise: {evaluationResult.Type}");
+                return null;
             }
-            else if (promise.State == PromiseState.Rejected)
+
+            // For async modules (TLA), we need to run the event loop to process pending jobs
+            // which will resolve the module's promise. With complex module graphs and dynamic
+            // imports, promise handlers may be registered asynchronously, so we need to allow
+            // multiple iterations even when the queue appears empty.
+            var emptyQueueIterations = 0;
+            const int maxEmptyQueueIterations = 10;
+
+            while (promise.State == PromiseState.Pending)
+            {
+                _engine.RunAvailableContinuations();
+
+                // Check if promise settled after processing continuations
+                if (promise.State != PromiseState.Pending)
+                {
+                    break;
+                }
+
+                // If no more jobs to process, this could mean:
+                // 1. True deadlock - promise will never resolve (error condition)
+                // 2. Complex module graph where async dependencies are chained and need more time
+                // We allow several iterations with empty queue before assuming deadlock.
+                if (_engine._eventLoop.IsEmpty)
+                {
+                    emptyQueueIterations++;
+                    if (emptyQueueIterations >= maxEmptyQueueIterations)
+                    {
+                        // Queue has been empty for multiple iterations - likely a real issue
+                        break;
+                    }
+                }
+                else
+                {
+                    // Queue has events, reset the counter
+                    emptyQueueIterations = 0;
+                }
+            }
+
+            if (promise.State == PromiseState.Rejected)
             {
                 var location = module is CyclicModule cyclicModuleRecord
                     ? cyclicModuleRecord.AbnormalCompletionLocation
                     : SourceLocation.From(new Position(), new Position());
 
                 var node = AstExtensions.CreateLocationNode(location);
-                ExceptionHelper.ThrowJavaScriptException(_engine, promise.Value, node.Location);
+                Throw.JavaScriptException(_engine, promise.Value, node.Location);
             }
             else if (promise.State != PromiseState.Fulfilled)
             {
-                ExceptionHelper.ThrowInvalidOperationException($"Error while evaluating module: Module evaluation did not return a fulfilled promise: {promise.State}");
+                Throw.InvalidOperationException($"Error while evaluating module: Module evaluation did not return a fulfilled promise: {promise.State}");
             }
 
             return evaluationResult;

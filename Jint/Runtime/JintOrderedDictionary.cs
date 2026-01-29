@@ -25,7 +25,7 @@ namespace Jint.Runtime;
 /// It can be costly to remove a key/value pair because other keys' indexes must be adjusted.
 /// </remarks>
 [DebuggerDisplay("Count = {Count}")]
-internal sealed class OrderedDictionary<TKey, TValue>
+internal sealed class JintOrderedDictionary<TKey, TValue>
     : IDictionary<TKey, TValue>, IList<KeyValuePair<TKey, TValue>> where TKey : class where TValue : class
 {
     private readonly Dictionary<TKey, TValue> dictionary;
@@ -39,7 +39,7 @@ internal sealed class OrderedDictionary<TKey, TValue>
     /// <summary>
     /// Initializes a new instance of an OrderedDictionary.
     /// </summary>
-    public OrderedDictionary()
+    public JintOrderedDictionary()
     {
         dictionary = new Dictionary<TKey, TValue>();
         keys = new List<TKey>();
@@ -50,7 +50,7 @@ internal sealed class OrderedDictionary<TKey, TValue>
     /// </summary>
     /// <param name="capacity">The initial capacity of the dictionary.</param>
     /// <exception cref="System.ArgumentOutOfRangeException">The capacity is less than zero.</exception>
-    public OrderedDictionary(int capacity)
+    public JintOrderedDictionary(int capacity)
     {
         dictionary = new Dictionary<TKey, TValue>(capacity);
         keys = new List<TKey>(capacity);
@@ -60,7 +60,7 @@ internal sealed class OrderedDictionary<TKey, TValue>
     /// Initializes a new instance of an OrderedDictionary.
     /// </summary>
     /// <param name="comparer">The equality comparer to use to compare keys.</param>
-    public OrderedDictionary(IEqualityComparer<TKey> comparer)
+    public JintOrderedDictionary(IEqualityComparer<TKey> comparer)
     {
         dictionary = new Dictionary<TKey, TValue>(comparer);
         keys = new List<TKey>();
@@ -71,7 +71,7 @@ internal sealed class OrderedDictionary<TKey, TValue>
     /// </summary>
     /// <param name="capacity">The initial capacity of the dictionary.</param>
     /// <param name="comparer">The equality comparer to use to compare keys.</param>
-    public OrderedDictionary(int capacity, IEqualityComparer<TKey> comparer)
+    public JintOrderedDictionary(int capacity, IEqualityComparer<TKey> comparer)
     {
         dictionary = new Dictionary<TKey, TValue>(capacity, comparer);
         keys = new List<TKey>(capacity);
@@ -103,7 +103,7 @@ internal sealed class OrderedDictionary<TKey, TValue>
     {
         if (index < 0 || index > dictionary.Count)
         {
-            ExceptionHelper.ThrowArgumentOutOfRangeException(nameof(index), IndexOutOfRange);
+            Throw.ArgumentOutOfRangeException(nameof(index), IndexOutOfRange);
         }
         dictionary.Add(key, value);
         keys.Insert(index, key);
@@ -301,7 +301,7 @@ internal sealed class OrderedDictionary<TKey, TValue>
     {
         if (index < 0 || index > dictionary.Count)
         {
-            ExceptionHelper.ThrowArgumentOutOfRangeException(nameof(index), IndexOutOfRange);
+            Throw.ArgumentOutOfRangeException(nameof(index), IndexOutOfRange);
         }
         dictionary.Add(item.Key, item.Value);
         keys.Insert(index, item.Key);
@@ -354,16 +354,16 @@ internal sealed class OrderedDictionary<TKey, TValue>
     {
         if (array == null)
         {
-            ExceptionHelper.ThrowArgumentNullException(nameof(array));
+            Throw.ArgumentNullException(nameof(array));
             return;
         }
         if (arrayIndex < 0)
         {
-            ExceptionHelper.ThrowArgumentOutOfRangeException(nameof(arrayIndex), string.Format(CultureInfo.CurrentCulture, TooSmall, 0));
+            Throw.ArgumentOutOfRangeException(nameof(arrayIndex), string.Format(CultureInfo.CurrentCulture, TooSmall, 0));
         }
         if (dictionary.Count > array.Length - arrayIndex)
         {
-            ExceptionHelper.ThrowArgumentException(ArrayTooSmall, nameof(array));
+            Throw.ArgumentException(ArrayTooSmall, nameof(array));
         }
         foreach (TKey key in keys)
         {
@@ -409,14 +409,14 @@ internal sealed class OrderedDictionary<TKey, TValue>
     /// </summary>
     public sealed class KeyCollection : ICollection<TKey>
     {
-        private readonly OrderedDictionary<TKey, TValue> parent;
+        private readonly JintOrderedDictionary<TKey, TValue> parent;
 
         /// <summary>
         /// Initializes a new instance of a KeyCollection.
         /// </summary>
         /// <param name="dictionary">The OrderedDictionary whose keys to wrap.</param>
         /// <exception cref="System.ArgumentNullException">The dictionary is null.</exception>
-        public KeyCollection(OrderedDictionary<TKey, TValue> dictionary)
+        public KeyCollection(JintOrderedDictionary<TKey, TValue> dictionary)
         {
             parent = dictionary;
         }
@@ -460,13 +460,13 @@ internal sealed class OrderedDictionary<TKey, TValue>
         [EditorBrowsable(EditorBrowsableState.Never)]
         void ICollection<TKey>.Add(TKey item)
         {
-            ExceptionHelper.ThrowNotSupportedException(EditReadOnlyList);
+            Throw.NotSupportedException(EditReadOnlyList);
         }
 
         [EditorBrowsable(EditorBrowsableState.Never)]
         void ICollection<TKey>.Clear()
         {
-            ExceptionHelper.ThrowNotSupportedException(EditReadOnlyList);
+            Throw.NotSupportedException(EditReadOnlyList);
         }
 
         [EditorBrowsable(EditorBrowsableState.Never)]
@@ -478,7 +478,7 @@ internal sealed class OrderedDictionary<TKey, TValue>
         [EditorBrowsable(EditorBrowsableState.Never)]
         bool ICollection<TKey>.Remove(TKey item)
         {
-            ExceptionHelper.ThrowNotSupportedException(EditReadOnlyList);
+            Throw.NotSupportedException(EditReadOnlyList);
             return false;
         }
 
@@ -493,14 +493,14 @@ internal sealed class OrderedDictionary<TKey, TValue>
     /// </summary>
     public sealed class ValueCollection : ICollection<TValue>
     {
-        private readonly OrderedDictionary<TKey, TValue> parent;
+        private readonly JintOrderedDictionary<TKey, TValue> parent;
 
         /// <summary>
         /// Initializes a new instance of a ValueCollection.
         /// </summary>
         /// <param name="dictionary">The OrderedDictionary whose keys to wrap.</param>
         /// <exception cref="System.ArgumentNullException">The dictionary is null.</exception>
-        public ValueCollection(OrderedDictionary<TKey, TValue> dictionary)
+        public ValueCollection(JintOrderedDictionary<TKey, TValue> dictionary)
         {
             parent = dictionary;
         }
@@ -517,11 +517,11 @@ internal sealed class OrderedDictionary<TKey, TValue>
         {
             if (arrayIndex < 0)
             {
-                ExceptionHelper.ThrowArgumentOutOfRangeException(nameof(arrayIndex), string.Format(CultureInfo.InvariantCulture, TooSmall, 0));
+                Throw.ArgumentOutOfRangeException(nameof(arrayIndex), string.Format(CultureInfo.InvariantCulture, TooSmall, 0));
             }
             if (parent.dictionary.Count > array.Length - arrayIndex)
             {
-                ExceptionHelper.ThrowArgumentException(ArrayTooSmall, nameof(array));
+                Throw.ArgumentException(ArrayTooSmall, nameof(array));
             }
             foreach (TKey key in parent.keys)
             {
@@ -558,13 +558,13 @@ internal sealed class OrderedDictionary<TKey, TValue>
         [EditorBrowsable(EditorBrowsableState.Never)]
         void ICollection<TValue>.Add(TValue item)
         {
-            ExceptionHelper.ThrowNotSupportedException(EditReadOnlyList);
+            Throw.NotSupportedException(EditReadOnlyList);
         }
 
         [EditorBrowsable(EditorBrowsableState.Never)]
         void ICollection<TValue>.Clear()
         {
-            ExceptionHelper.ThrowNotSupportedException(EditReadOnlyList);
+            Throw.NotSupportedException(EditReadOnlyList);
         }
 
         [EditorBrowsable(EditorBrowsableState.Never)]
@@ -573,7 +573,7 @@ internal sealed class OrderedDictionary<TKey, TValue>
         [EditorBrowsable(EditorBrowsableState.Never)]
         bool ICollection<TValue>.Remove(TValue item)
         {
-            ExceptionHelper.ThrowNotSupportedException(EditReadOnlyList);
+            Throw.NotSupportedException(EditReadOnlyList);
             return false;
         }
 

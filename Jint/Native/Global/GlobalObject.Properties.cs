@@ -10,6 +10,7 @@ public partial class GlobalObject
     private static readonly Key propertyAggregateError = "AggregateError";
     private static readonly Key propertyArray = "Array";
     private static readonly Key propertyArrayBuffer = "ArrayBuffer";
+    private static readonly Key propertyAsyncDisposableStack = "AsyncDisposableStack";
     private static readonly Key propertyAtomics = "Atomics";
     private static readonly Key propertyBigInt = "BigInt";
     private static readonly Key propertyBigInt64Array = "BigInt64Array";
@@ -17,6 +18,7 @@ public partial class GlobalObject
     private static readonly Key propertyBoolean = "Boolean";
     private static readonly Key propertyDataView = "DataView";
     private static readonly Key propertyDate = "Date";
+    private static readonly Key propertyDisposableStack = "DisposableStack";
     private static readonly Key propertyError = "Error";
     private static readonly Key propertyEvalError = "EvalError";
     private static readonly Key propertyFinalizationRegistry = "FinalizationRegistry";
@@ -28,8 +30,10 @@ public partial class GlobalObject
     private static readonly Key propertyInt16Array = "Int16Array";
     private static readonly Key propertyInt32Array = "Int32Array";
     private static readonly Key propertyInt8Array = "Int8Array";
-    //private static readonly Key propertyIntl = "Intl";
+    private static readonly Key propertyIterator = "Iterator";
+    private static readonly Key propertyIntl = "Intl";
     private static readonly Key propertyJSON = "JSON";
+    private static readonly Key propertyTemporal = "Temporal";
     private static readonly Key propertyMap = "Map";
     private static readonly Key propertyMath = "Math";
     private static readonly Key propertyNumber = "Number";
@@ -46,6 +50,7 @@ public partial class GlobalObject
     private static readonly Key propertyString = "String";
     private static readonly Key propertySymbol = "Symbol";
     private static readonly Key propertySyntaxError = "SyntaxError";
+    private static readonly Key propertySuppressedError = "SuppressedError";
     private static readonly Key propertyTypeError = "TypeError";
     private static readonly Key propertyTypedArray = "TypedArray";
     private static readonly Key propertyURIError = "URIError";
@@ -82,10 +87,11 @@ public partial class GlobalObject
         const PropertyFlag LengthFlags = PropertyFlag.Configurable;
         const PropertyFlag PropertyFlags = PropertyFlag.Configurable | PropertyFlag.Writable;
 
-        var properties = new StringDictionarySlim<PropertyDescriptor>(65);
+        var properties = new StringDictionarySlim<PropertyDescriptor>(70);
         properties.AddDangerous(propertyAggregateError, new LazyPropertyDescriptor<GlobalObject>(this, static global => global._realm.Intrinsics.AggregateError, PropertyFlags));
         properties.AddDangerous(propertyArray, new LazyPropertyDescriptor<GlobalObject>(this, static global => global._realm.Intrinsics.Array, PropertyFlags));
         properties.AddDangerous(propertyArrayBuffer, new LazyPropertyDescriptor<GlobalObject>(this, static global => global._realm.Intrinsics.ArrayBuffer, PropertyFlags));
+        properties.AddDangerous(propertyAsyncDisposableStack, new LazyPropertyDescriptor<GlobalObject>(this, static global => global._realm.Intrinsics.AsyncDisposableStack, PropertyFlags));
         properties.AddDangerous(propertyAtomics, new LazyPropertyDescriptor<GlobalObject>(this, static global => global._realm.Intrinsics.Atomics, PropertyFlags));
         properties.AddDangerous(propertyBigInt, new LazyPropertyDescriptor<GlobalObject>(this, static global => global._realm.Intrinsics.BigInt, PropertyFlags));
         properties.AddDangerous(propertyBigInt64Array, new LazyPropertyDescriptor<GlobalObject>(this, static global => global._realm.Intrinsics.BigInt64Array, PropertyFlags));
@@ -93,6 +99,7 @@ public partial class GlobalObject
         properties.AddDangerous(propertyBoolean, new LazyPropertyDescriptor<GlobalObject>(this, static global => global._realm.Intrinsics.Boolean, PropertyFlags));
         properties.AddDangerous(propertyDataView, new LazyPropertyDescriptor<GlobalObject>(this, static global => global._realm.Intrinsics.DataView, PropertyFlags));
         properties.AddDangerous(propertyDate, new LazyPropertyDescriptor<GlobalObject>(this, static global => global._realm.Intrinsics.Date, PropertyFlags));
+        properties.AddDangerous(propertyDisposableStack, new LazyPropertyDescriptor<GlobalObject>(this, static global => global._realm.Intrinsics.DisposableStack, PropertyFlags));
         properties.AddDangerous(propertyError, new LazyPropertyDescriptor<GlobalObject>(this, static global => global._realm.Intrinsics.Error, PropertyFlags));
         properties.AddDangerous(propertyEvalError, new LazyPropertyDescriptor<GlobalObject>(this, static global => global._realm.Intrinsics.EvalError, PropertyFlags));
         properties.AddDangerous(propertyFinalizationRegistry, new LazyPropertyDescriptor<GlobalObject>(this, static global => global._realm.Intrinsics.FinalizationRegistry, PropertyFlags));
@@ -104,7 +111,9 @@ public partial class GlobalObject
         properties.AddDangerous(propertyInt16Array, new LazyPropertyDescriptor<GlobalObject>(this, static global => global._realm.Intrinsics.Int16Array, PropertyFlags));
         properties.AddDangerous(propertyInt32Array, new LazyPropertyDescriptor<GlobalObject>(this, static global => global._realm.Intrinsics.Int32Array, PropertyFlags));
         properties.AddDangerous(propertyInt8Array, new LazyPropertyDescriptor<GlobalObject>(this, static global => global._realm.Intrinsics.Int8Array, PropertyFlags));
-        // TODO properties.AddDapropertygerous(propertyIntl, new LazyPropertyDescriptor<GlobalObject>(this, static global => global._realm.Intrinsics.Intl, propertyFlags));
+        properties.AddDangerous(propertyIntl, new LazyPropertyDescriptor<GlobalObject>(this, static global => global._realm.Intrinsics.Intl, PropertyFlags));
+        properties.AddDangerous(propertyIterator, new LazyPropertyDescriptor<GlobalObject>(this, static global => global._realm.Intrinsics.Iterator, PropertyFlags));
+        properties.AddDangerous(propertyTemporal, new LazyPropertyDescriptor<GlobalObject>(this, static global => global._realm.Intrinsics.Temporal, PropertyFlags));
         properties.AddDangerous(propertyJSON, new LazyPropertyDescriptor<GlobalObject>(this, static global => global._realm.Intrinsics.Json, PropertyFlags));
         properties.AddDangerous(propertyMap, new LazyPropertyDescriptor<GlobalObject>(this, static global => global._realm.Intrinsics.Map, PropertyFlags));
         properties.AddDangerous(propertyMath, new LazyPropertyDescriptor<GlobalObject>(this, static global => global._realm.Intrinsics.Math, PropertyFlags));
@@ -122,6 +131,7 @@ public partial class GlobalObject
         properties.AddDangerous(propertyString, new LazyPropertyDescriptor<GlobalObject>(this, static global => global._realm.Intrinsics.String, PropertyFlags));
         properties.AddDangerous(propertySymbol, new LazyPropertyDescriptor<GlobalObject>(this, static global => global._realm.Intrinsics.Symbol, PropertyFlags));
         properties.AddDangerous(propertySyntaxError, new LazyPropertyDescriptor<GlobalObject>(this, static global => global._realm.Intrinsics.SyntaxError, PropertyFlags));
+        properties.AddDangerous(propertySuppressedError, new LazyPropertyDescriptor<GlobalObject>(this, static global => global._realm.Intrinsics.SuppressedError, PropertyFlags));
         properties.AddDangerous(propertyTypeError, new LazyPropertyDescriptor<GlobalObject>(this, static global => global._realm.Intrinsics.TypeError, PropertyFlags));
         properties.AddDangerous(propertyTypedArray, new LazyPropertyDescriptor<GlobalObject>(this, static global => global._realm.Intrinsics.TypedArray, PropertyFlags));
         properties.AddDangerous(propertyURIError, new LazyPropertyDescriptor<GlobalObject>(this, static global => global._realm.Intrinsics.UriError, PropertyFlags));

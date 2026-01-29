@@ -1,6 +1,5 @@
 #pragma warning disable CA1859 // Use concrete types when possible for improved performance -- most of constructor methods return JsValue
 
-using Jint.Collections;
 using Jint.Native.Function;
 using Jint.Native.Object;
 using Jint.Runtime;
@@ -37,7 +36,7 @@ internal sealed class SymbolConstructor : Constructor
         const PropertyFlag lengthFlags = PropertyFlag.Configurable;
         const PropertyFlag propertyFlags = PropertyFlag.AllForbidden;
 
-        var properties = new PropertyDictionary(15, checkExistingKeys: false)
+        var properties = new PropertyDictionary(17, checkExistingKeys: false)
         {
             ["for"] = new PropertyDescriptor(new ClrFunction(Engine, "for", For, 1, lengthFlags), PropertyFlag.Writable | PropertyFlag.Configurable),
             ["keyFor"] = new PropertyDescriptor(new ClrFunction(Engine, "keyFor", KeyFor, 1, lengthFlags), PropertyFlag.Writable | PropertyFlag.Configurable),
@@ -53,7 +52,9 @@ internal sealed class SymbolConstructor : Constructor
             ["toPrimitive"] = new PropertyDescriptor(GlobalSymbolRegistry.ToPrimitive, propertyFlags),
             ["toStringTag"] = new PropertyDescriptor(GlobalSymbolRegistry.ToStringTag, propertyFlags),
             ["unscopables"] = new PropertyDescriptor(GlobalSymbolRegistry.Unscopables, propertyFlags),
-            ["asyncIterator"] = new PropertyDescriptor(GlobalSymbolRegistry.AsyncIterator, propertyFlags)
+            ["asyncIterator"] = new PropertyDescriptor(GlobalSymbolRegistry.AsyncIterator, propertyFlags),
+            ["dispose"] = new PropertyDescriptor(GlobalSymbolRegistry.Dispose, propertyFlags),
+            ["asyncDispose"] = new PropertyDescriptor(GlobalSymbolRegistry.AsyncDispose, propertyFlags),
         };
         SetProperties(properties);
     }
@@ -61,7 +62,7 @@ internal sealed class SymbolConstructor : Constructor
     /// <summary>
     /// http://www.ecma-international.org/ecma-262/6.0/index.html#sec-symbol-description
     /// </summary>
-    protected internal override JsValue Call(JsValue thisObject, JsValue[] arguments)
+    protected internal override JsValue Call(JsValue thisObject, JsCallArguments arguments)
     {
         var description = arguments.At(0);
         var descString = description.IsUndefined()
@@ -75,7 +76,7 @@ internal sealed class SymbolConstructor : Constructor
     /// <summary>
     /// https://tc39.es/ecma262/#sec-symbol.for
     /// </summary>
-    private JsValue For(JsValue thisObject, JsValue[] arguments)
+    private JsValue For(JsValue thisObject, JsCallArguments arguments)
     {
         var stringKey = TypeConverter.ToJsString(arguments.At(0));
 
@@ -93,12 +94,12 @@ internal sealed class SymbolConstructor : Constructor
     /// <summary>
     /// https://tc39.es/ecma262/#sec-symbol.keyfor
     /// </summary>
-    private JsValue KeyFor(JsValue thisObject, JsValue[] arguments)
+    private JsValue KeyFor(JsValue thisObject, JsCallArguments arguments)
     {
         var symbol = arguments.At(0) as JsSymbol;
         if (symbol is null)
         {
-            ExceptionHelper.ThrowTypeError(_realm);
+            Throw.TypeError(_realm);
         }
 
         if (_engine.GlobalSymbolRegistry.TryGetSymbol(symbol._value, out var e))
@@ -109,9 +110,9 @@ internal sealed class SymbolConstructor : Constructor
         return Undefined;
     }
 
-    public override ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
+    public override ObjectInstance Construct(JsCallArguments arguments, JsValue newTarget)
     {
-        ExceptionHelper.ThrowTypeError(_realm, "Symbol is not a constructor");
+        Throw.TypeError(_realm, "Symbol is not a constructor");
         return null;
     }
 

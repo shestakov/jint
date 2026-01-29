@@ -71,55 +71,6 @@ internal sealed class HoistingScope
             treeWalker._lexicalNames);
     }
 
-    public static List<Declaration>? GetLexicalDeclarations(BlockStatement statement)
-    {
-        List<Declaration>? lexicalDeclarations = null;
-        ref readonly var statementListItems = ref statement.Body;
-        for (var i = 0; i < statementListItems.Count; i++)
-        {
-            var node = statementListItems[i];
-            if (node.Type != NodeType.VariableDeclaration && node.Type != NodeType.FunctionDeclaration && node.Type != NodeType.ClassDeclaration)
-            {
-                continue;
-            }
-
-            if (node is VariableDeclaration { Kind: VariableDeclarationKind.Var })
-            {
-                continue;
-            }
-
-            lexicalDeclarations ??= new List<Declaration>();
-            lexicalDeclarations.Add((Declaration)node);
-        }
-
-        return lexicalDeclarations;
-    }
-
-    public static List<Declaration>? GetLexicalDeclarations(SwitchCase statement)
-    {
-        List<Declaration>? lexicalDeclarations = null;
-        ref readonly var statementListItems = ref statement.Consequent;
-        for (var i = 0; i < statementListItems.Count; i++)
-        {
-            var node = statementListItems[i];
-            if (node.Type != NodeType.VariableDeclaration)
-            {
-                continue;
-            }
-
-            var rootVariable = (VariableDeclaration)node;
-            if (rootVariable.Kind == VariableDeclarationKind.Var)
-            {
-                continue;
-            }
-
-            lexicalDeclarations ??= new List<Declaration>();
-            lexicalDeclarations.Add(rootVariable);
-        }
-
-        return lexicalDeclarations;
-    }
-
     public static void GetImportsAndExports(
         AstModule module,
         out HashSet<ModuleRequest> requestedModules,
@@ -149,9 +100,9 @@ internal sealed class HoistingScope
         }
 
         var exportEntries = treeWalker._exportEntries;
-        localExportEntries = new();
-        indirectExportEntries = new();
-        starExportEntries = new();
+        localExportEntries = [];
+        indirectExportEntries = [];
+        starExportEntries = [];
 
         if (exportEntries != null)
         {
@@ -174,7 +125,10 @@ internal sealed class HoistingScope
                             {
                                 if (string.Equals(ie.ImportName, "*", StringComparison.Ordinal))
                                 {
-                                    localExportEntries.Add(ee);
+                                    // Per ECMAScript 16.2.1.7.1 step 10.b.ii:
+                                    // This is a re-export of an imported module namespace object.
+                                    // Create an indirect export entry with ImportName: all ("*")
+                                    indirectExportEntries.Add(new(ee.ExportName, ie.ModuleRequest, "*", null));
                                 }
                                 else
                                 {
@@ -223,14 +177,14 @@ internal sealed class HoistingScope
                 var childType = childNode.Type;
                 if (childType == NodeType.VariableDeclaration)
                 {
-                    var variableDeclaration = (VariableDeclaration)childNode;
+                    var variableDeclaration = (VariableDeclaration) childNode;
                     if (variableDeclaration.Kind == VariableDeclarationKind.Var)
                     {
-                        _variableDeclarations ??= new List<VariableDeclaration>();
+                        _variableDeclarations ??= [];
                         _variableDeclarations.Add(variableDeclaration);
                         if (_collectVarNames)
                         {
-                            _varNames ??= new List<Key>();
+                            _varNames ??= [];
                             ref readonly var nodeList = ref variableDeclaration.Declarations;
                             foreach (var declaration in nodeList)
                             {
@@ -244,11 +198,11 @@ internal sealed class HoistingScope
 
                     if (parent is null or AstModule && variableDeclaration.Kind != VariableDeclarationKind.Var)
                     {
-                        _lexicalDeclarations ??= new List<Declaration>();
+                        _lexicalDeclarations ??= [];
                         _lexicalDeclarations.Add(variableDeclaration);
                         if (_collectLexicalNames)
                         {
-                            _lexicalNames ??= new List<string>();
+                            _lexicalNames ??= [];
                             ref readonly var nodeList = ref variableDeclaration.Declarations;
                             foreach (var declaration in nodeList)
                             {
@@ -265,13 +219,13 @@ internal sealed class HoistingScope
                     // function declarations are not hoisted if they are under block or case clauses
                     if (parent is null || (node.Type != NodeType.BlockStatement && node.Type != NodeType.SwitchCase))
                     {
-                        _functions ??= new List<FunctionDeclaration>();
-                        _functions.Add((FunctionDeclaration)childNode);
+                        _functions ??= [];
+                        _functions.Add((FunctionDeclaration) childNode);
                     }
                 }
                 else if (childType == NodeType.ClassDeclaration && parent is null or AstModule)
                 {
-                    _lexicalDeclarations ??= new List<Declaration>();
+                    _lexicalDeclarations ??= [];
                     _lexicalDeclarations.Add((Declaration) childNode);
                 }
 
@@ -322,6 +276,66 @@ internal sealed class HoistingScope
                 if (!childNode.ChildNodes.IsEmpty())
                 {
                     Visit(childNode);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Checks if the module has top-level await expressions.
+    /// Only checks at the module level, not inside function bodies.
+    /// </summary>
+    public static bool HasTopLevelAwait(AstModule module)
+    {
+        return HasTopLevelAwaitVisitor.Check(module);
+    }
+
+    private sealed class HasTopLevelAwaitVisitor
+    {
+        private bool _hasTopLevelAwait;
+
+        public static bool Check(AstModule module)
+        {
+            var visitor = new HasTopLevelAwaitVisitor();
+            visitor.Visit(module);
+            return visitor._hasTopLevelAwait;
+        }
+
+        private void Visit(Node node)
+        {
+            if (_hasTopLevelAwait)
+            {
+                return;
+            }
+
+            // Found a top-level await expression
+            if (node.Type == NodeType.AwaitExpression)
+            {
+                _hasTopLevelAwait = true;
+                return;
+            }
+
+            // Found a top-level for-await-of statement
+            if (node is ForOfStatement { Await: true })
+            {
+                _hasTopLevelAwait = true;
+                return;
+            }
+
+            // Don't descend into function bodies - those have their own async context
+            if (node.Type is NodeType.FunctionDeclaration or NodeType.FunctionExpression
+                or NodeType.ArrowFunctionExpression or NodeType.ClassDeclaration
+                or NodeType.ClassExpression)
+            {
+                return;
+            }
+
+            foreach (var childNode in node.ChildNodes)
+            {
+                Visit(childNode);
+                if (_hasTopLevelAwait)
+                {
+                    return;
                 }
             }
         }

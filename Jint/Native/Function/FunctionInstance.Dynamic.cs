@@ -20,7 +20,7 @@ public partial class Function
         ObjectInstance constructor,
         JsValue newTarget,
         FunctionKind kind,
-        JsValue[] arguments)
+        JsCallArguments arguments)
     {
         // TODO var callerContext = _engine.GetExecutionContext(1);
         var callerContext = _engine.ExecutionContext;
@@ -50,7 +50,7 @@ public partial class Function
                 fallbackProto = static intrinsics => intrinsics.AsyncGeneratorFunction.PrototypeObject;
                 break;
             default:
-                ExceptionHelper.ThrowArgumentOutOfRangeException(nameof(kind), kind.ToString());
+                Throw.ArgumentOutOfRangeException(nameof(kind), kind.ToString());
                 break;
         }
 
@@ -96,7 +96,7 @@ public partial class Function
                         functionExpression = "async function* f(){}";
                         break;
                     default:
-                        ExceptionHelper.ThrowArgumentOutOfRangeException(nameof(kind), kind.ToString());
+                        Throw.ArgumentOutOfRangeException(nameof(kind), kind.ToString());
                         break;
                 }
             }
@@ -117,7 +117,7 @@ public partial class Function
                         functionExpression = "async function* f(";
                         break;
                     default:
-                        ExceptionHelper.ThrowArgumentOutOfRangeException(nameof(kind), kind.ToString());
+                        Throw.ArgumentOutOfRangeException(nameof(kind), kind.ToString());
                         break;
                 }
 
@@ -154,7 +154,7 @@ public partial class Function
         }
         catch (ParseErrorException ex)
         {
-            ExceptionHelper.ThrowSyntaxError(_engine.ExecutionContext.Realm, ex.Message);
+            Throw.SyntaxError(_engine.ExecutionContext.Realm, ex.Message);
         }
 
         var proto = GetPrototypeFromConstructor(newTarget, fallbackProto);
@@ -199,6 +199,10 @@ public partial class Function
             function,
             scope,
             thisMode,
-            functionPrototype) { _privateEnvironment = privateScope, _realm = _realm };
+            functionPrototype)
+        {
+            _privateEnvironment = privateScope,
+            _realm = _realm,
+        };
     }
 }

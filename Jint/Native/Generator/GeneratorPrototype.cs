@@ -1,5 +1,4 @@
-﻿using Jint.Collections;
-using Jint.Native.Iterator;
+﻿using Jint.Native.Iterator;
 using Jint.Native.Object;
 using Jint.Native.Symbol;
 using Jint.Runtime;
@@ -28,12 +27,12 @@ internal sealed class GeneratorPrototype : ObjectInstance
     {
         const PropertyFlag PropertyFlags = PropertyFlag.Configurable | PropertyFlag.Writable;
         const PropertyFlag LengthFlags = PropertyFlag.Configurable;
-        var properties = new PropertyDictionary(4, false)
+        var properties = new PropertyDictionary(4, checkExistingKeys: false)
         {
-            ["constructor"] = new(_constructor, PropertyFlag.Configurable),
-            ["next"] = new(new ClrFunction(Engine, "next", Next, 1, LengthFlags), PropertyFlags),
-            ["return"] = new(new ClrFunction(Engine, "return", Return, 1, LengthFlags), PropertyFlags),
-            ["throw"] = new(new ClrFunction(Engine, "throw", Throw, 1, LengthFlags), PropertyFlags)
+            [KnownKeys.Constructor] = new(_constructor, PropertyFlag.Configurable),
+            [KnownKeys.Next] = new(new ClrFunction(Engine, "next", Next, 1, LengthFlags), PropertyFlags),
+            [KnownKeys.Return] = new(new ClrFunction(Engine, "return", Return, 1, LengthFlags), PropertyFlags),
+            [KnownKeys.Throw] = new(new ClrFunction(Engine, "throw", Throw, 1, LengthFlags), PropertyFlags)
         };
         SetProperties(properties);
 
@@ -47,7 +46,7 @@ internal sealed class GeneratorPrototype : ObjectInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-generator.prototype.next
     /// </summary>
-    private ObjectInstance Next(JsValue thisObject, JsValue[] arguments)
+    private ObjectInstance Next(JsValue thisObject, JsCallArguments arguments)
     {
         var g = AssertGeneratorInstance(thisObject);
         var value = arguments.At(0, null!);
@@ -57,7 +56,7 @@ internal sealed class GeneratorPrototype : ObjectInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-generator.prototype.return
     /// </summary>
-    private JsValue Return(JsValue thisObject, JsValue[] arguments)
+    private JsValue Return(JsValue thisObject, JsCallArguments arguments)
     {
         var g = AssertGeneratorInstance(thisObject);
         var value = arguments.At(0);
@@ -68,7 +67,7 @@ internal sealed class GeneratorPrototype : ObjectInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-generator.prototype.throw
     /// </summary>
-    private JsValue Throw(JsValue thisObject, JsValue[] arguments)
+    private JsValue Throw(JsValue thisObject, JsCallArguments arguments)
     {
         var g = AssertGeneratorInstance(thisObject);
         var exception = arguments.At(0);
@@ -81,7 +80,7 @@ internal sealed class GeneratorPrototype : ObjectInstance
         var generatorInstance = thisObj as GeneratorInstance;
         if (generatorInstance is null)
         {
-            ExceptionHelper.ThrowTypeError(_engine.Realm, "object must be a Generator instance");
+            Runtime.Throw.TypeError(_engine.Realm, "object must be a Generator instance");
         }
 
         return generatorInstance;

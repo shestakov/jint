@@ -1,7 +1,6 @@
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using Jint.Native;
-using Jint.Native.Iterator;
 using Jint.Native.Number;
 
 namespace Jint.Runtime.Interpreter.Expressions;
@@ -29,6 +28,8 @@ internal abstract class JintExpression
             return (JsValue) result;
         }
 
+        // Set LastSyntaxElement for proper error location if GetValue throws
+        context.LastSyntaxElement = _expression;
         return context.Engine.GetValue(reference, returnReferenceToPool: true);
     }
 
@@ -137,7 +138,84 @@ internal abstract class JintExpression
 
         if (result is null)
         {
-            ExceptionHelper.ThrowArgumentOutOfRangeException(nameof(expression), $"unsupported expression type '{expression.Type}'");
+            Throw.ArgumentOutOfRangeException(nameof(expression), $"unsupported expression type '{expression.Type}'");
+        }
+
+        return result;
+    }
+
+    protected static JsValue Remainder(EvaluationContext context, JsValue left, JsValue right)
+    {
+        var result = JsValue.Undefined;
+        left = TypeConverter.ToNumeric(left);
+        right = TypeConverter.ToNumeric(right);
+        if (AreIntegerOperands(left, right))
+        {
+            var leftInteger = left.AsInteger();
+            var rightInteger = right.AsInteger();
+
+            if (rightInteger == 0)
+            {
+                result = JsNumber.DoubleNaN;
+            }
+            else
+            {
+                var modulo = leftInteger % rightInteger;
+                if (modulo == 0 && leftInteger < 0)
+                {
+                    result = JsNumber.NegativeZero;
+                }
+                else
+                {
+                    result = JsNumber.Create(modulo);
+                }
+            }
+        }
+        else if (JintBinaryExpression.AreNonBigIntOperands(left, right))
+        {
+            var n = left.AsNumber();
+            var d = right.AsNumber();
+
+            if (double.IsNaN(n) || double.IsNaN(d) || double.IsInfinity(n))
+            {
+                result = JsNumber.DoubleNaN;
+            }
+            else if (double.IsInfinity(d))
+            {
+                result = n;
+            }
+            else if (NumberInstance.IsPositiveZero(d) || NumberInstance.IsNegativeZero(d))
+            {
+                result = JsNumber.DoubleNaN;
+            }
+            else if (NumberInstance.IsPositiveZero(n) || NumberInstance.IsNegativeZero(n))
+            {
+                result = n;
+            }
+            else
+            {
+                result = JsNumber.Create(n % d);
+            }
+        }
+        else
+        {
+            JintBinaryExpression.AssertValidBigIntArithmeticOperands(left, right);
+
+            var n = TypeConverter.ToBigInt(left);
+            var d = TypeConverter.ToBigInt(right);
+
+            if (d == 0)
+            {
+                Throw.RangeError(context.Engine.Realm, "Division by zero");
+            }
+            else if (n == 0)
+            {
+                result = JsBigInt.Zero;
+            }
+            else
+            {
+                result = JsBigInt.Create(n % d);
+            }
         }
 
         return result;
@@ -163,7 +241,7 @@ internal abstract class JintExpression
 
             if (y == 0)
             {
-                ExceptionHelper.ThrowRangeError(context.Engine.Realm, "Division by zero");
+                Throw.RangeError(context.Engine.Realm, "Division by zero");
             }
 
             result = JsBigInt.Create(x / y);
@@ -402,66 +480,6 @@ internal abstract class JintExpression
         }
 
         return string.CompareOrdinal(TypeConverter.ToString(x), TypeConverter.ToString(y)) < 0 ? JsBoolean.True : JsBoolean.False;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    protected static void BuildArguments(EvaluationContext context, JintExpression[] jintExpressions, JsValue[] targetArray)
-    {
-        for (uint i = 0; i < (uint) jintExpressions.Length; i++)
-        {
-            targetArray[i] = jintExpressions[i].GetValue(context).Clone();
-        }
-    }
-
-    protected static JsValue[] BuildArgumentsWithSpreads(EvaluationContext context, JintExpression[] jintExpressions)
-    {
-        var args = new List<JsValue>(jintExpressions.Length);
-        foreach (var jintExpression in jintExpressions)
-        {
-            if (jintExpression is JintSpreadExpression jse)
-            {
-                jse.GetValueAndCheckIterator(context, out var objectInstance, out var iterator);
-                // optimize for array unless someone has touched the iterator
-                if (objectInstance is JsArray { HasOriginalIterator: true } ai)
-                {
-                    var length = ai.GetLength();
-                    for (uint j = 0; j < length; ++j)
-                    {
-                        ai.TryGetValue(j, out var value);
-                        args.Add(value);
-                    }
-                }
-                else
-                {
-                    var protocol = new ArraySpreadProtocol(context.Engine, args, iterator!);
-                    protocol.Execute();
-                }
-            }
-            else
-            {
-                args.Add(jintExpression.GetValue(context).Clone());
-            }
-        }
-
-        return args.ToArray();
-    }
-
-    private sealed class ArraySpreadProtocol : IteratorProtocol
-    {
-        private readonly List<JsValue> _instance;
-
-        public ArraySpreadProtocol(
-            Engine engine,
-            List<JsValue> instance,
-            IteratorInstance iterator) : base(engine, iterator, 0)
-        {
-            _instance = instance;
-        }
-
-        protected override void ProcessItem(JsValue[] arguments, JsValue currentValue)
-        {
-            _instance.Add(currentValue);
-        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

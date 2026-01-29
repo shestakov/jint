@@ -4,19 +4,21 @@ namespace Jint.Native.Symbol;
 
 public sealed class GlobalSymbolRegistry
 {
-    public static readonly JsSymbol AsyncIterator = new JsSymbol("Symbol.asyncIterator");
-    public static readonly JsSymbol HasInstance = new JsSymbol("Symbol.hasInstance");
-    public static readonly JsSymbol IsConcatSpreadable = new JsSymbol("Symbol.isConcatSpreadable");
-    public static readonly JsSymbol Iterator = new JsSymbol("Symbol.iterator");
-    public static readonly JsSymbol Match = new JsSymbol("Symbol.match");
-    public static readonly JsSymbol MatchAll = new JsSymbol("Symbol.matchAll");
-    public static readonly JsSymbol Replace = new JsSymbol("Symbol.replace");
-    public static readonly JsSymbol Search = new JsSymbol("Symbol.search");
-    public static readonly JsSymbol Species = new JsSymbol("Symbol.species");
-    public static readonly JsSymbol Split = new JsSymbol("Symbol.split");
-    public static readonly JsSymbol ToPrimitive = new JsSymbol("Symbol.toPrimitive");
-    public static readonly JsSymbol ToStringTag = new JsSymbol("Symbol.toStringTag");
-    public static readonly JsSymbol Unscopables = new JsSymbol("Symbol.unscopables");
+    public static readonly JsSymbol AsyncDispose = new("Symbol.asyncDispose");
+    public static readonly JsSymbol AsyncIterator = new("Symbol.asyncIterator");
+    public static readonly JsSymbol Dispose = new("Symbol.dispose");
+    public static readonly JsSymbol HasInstance = new("Symbol.hasInstance");
+    public static readonly JsSymbol IsConcatSpreadable = new("Symbol.isConcatSpreadable");
+    public static readonly JsSymbol Iterator = new("Symbol.iterator");
+    public static readonly JsSymbol Match = new("Symbol.match");
+    public static readonly JsSymbol MatchAll = new("Symbol.matchAll");
+    public static readonly JsSymbol Replace = new("Symbol.replace");
+    public static readonly JsSymbol Search = new("Symbol.search");
+    public static readonly JsSymbol Species = new("Symbol.species");
+    public static readonly JsSymbol Split = new("Symbol.split");
+    public static readonly JsSymbol ToPrimitive = new("Symbol.toPrimitive");
+    public static readonly JsSymbol ToStringTag = new("Symbol.toStringTag");
+    public static readonly JsSymbol Unscopables = new("Symbol.unscopables");
 
     // engine-specific created by scripts
     private Dictionary<JsValue, JsSymbol>? _customSymbolLookup;
@@ -39,8 +41,16 @@ public sealed class GlobalSymbolRegistry
         return new JsSymbol(description);
     }
 
-    internal bool ContainsCustom(JsValue value)
+    /// <summary>
+    /// https://tc39.es/ecma262/#sec-keyforsymbol
+    /// </summary>
+    internal JsValue KeyForSymbol(JsValue value)
     {
-        return value is JsSymbol symbol && _customSymbolLookup?.ContainsKey(symbol._value) == true;
+        if (value is JsSymbol symbol && _customSymbolLookup?.TryGetValue(symbol._value, out var s) == true)
+        {
+            return s._value;
+        }
+
+        return JsValue.Undefined;
     }
 }

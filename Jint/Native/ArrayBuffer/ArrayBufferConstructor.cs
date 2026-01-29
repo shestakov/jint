@@ -1,4 +1,3 @@
-using Jint.Collections;
 using Jint.Native.Function;
 using Jint.Native.Object;
 using Jint.Native.Symbol;
@@ -41,7 +40,7 @@ public sealed class ArrayBufferConstructor : Constructor
 
         var symbols = new SymbolDictionary(1)
         {
-            [GlobalSymbolRegistry.Species] = new GetSetPropertyDescriptor(get: new ClrFunction(Engine, "get [Symbol.species]", Species, 0, lengthFlags), set: Undefined,PropertyFlag.Configurable),
+            [GlobalSymbolRegistry.Species] = new GetSetPropertyDescriptor(get: new ClrFunction(Engine, "get [Symbol.species]", Species, 0, lengthFlags), set: Undefined, PropertyFlag.Configurable),
         };
         SetSymbols(symbols);
     }
@@ -62,11 +61,11 @@ public sealed class ArrayBufferConstructor : Constructor
         return AllocateArrayBuffer(this, byteLength, maxByteLength);
     }
 
-    public override ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
+    public override ObjectInstance Construct(JsCallArguments arguments, JsValue newTarget)
     {
         if (newTarget.IsUndefined())
         {
-            ExceptionHelper.ThrowTypeError(_realm);
+            Throw.TypeError(_realm);
         }
 
         var length = arguments.At(0);
@@ -80,7 +79,7 @@ public sealed class ArrayBufferConstructor : Constructor
     /// <summary>
     /// https://tc39.es/ecma262/#sec-get-arraybuffer-@@species
     /// </summary>
-    private static JsValue Species(JsValue thisObject, JsValue[] arguments)
+    private static JsValue Species(JsValue thisObject, JsCallArguments arguments)
     {
         return thisObject;
     }
@@ -88,7 +87,7 @@ public sealed class ArrayBufferConstructor : Constructor
     /// <summary>
     /// https://tc39.es/ecma262/#sec-arraybuffer.isview
     /// </summary>
-    private static JsValue IsView(JsValue thisObject, JsValue[] arguments)
+    private static JsValue IsView(JsValue thisObject, JsCallArguments arguments)
     {
         var arg = arguments.At(0);
         return arg is JsDataView or JsTypedArray;
@@ -103,7 +102,7 @@ public sealed class ArrayBufferConstructor : Constructor
 
         if (allocatingResizableBuffer && byteLength > maxByteLength)
         {
-            ExceptionHelper.ThrowRangeError(_realm);
+            Throw.RangeError(_realm);
         }
 
         return CreateJsArrayBuffer(constructor, block: null, byteLength, maxByteLength);

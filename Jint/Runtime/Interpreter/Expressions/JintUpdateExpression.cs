@@ -32,7 +32,7 @@ internal sealed class JintUpdateExpression : JintExpression
         }
         else
         {
-            ExceptionHelper.ThrowArgumentException();
+            Throw.ArgumentException();
         }
 
         _leftIdentifier = _argument as JintIdentifierExpression;
@@ -60,7 +60,7 @@ internal sealed class JintUpdateExpression : JintExpression
         var reference = _argument.Evaluate(context) as Reference;
         if (reference is null)
         {
-            ExceptionHelper.ThrowTypeError(engine.Realm, "Invalid left-hand side expression");
+            Throw.TypeError(engine.Realm, "Invalid left-hand side expression");
         }
 
         reference.AssertValid(engine.Realm);
@@ -122,15 +122,18 @@ internal sealed class JintUpdateExpression : JintExpression
     private JsValue? UpdateIdentifier(EvaluationContext context)
     {
         var name = _leftIdentifier!.Identifier;
+        var strict = StrictModeScope.IsStrictModeCode;
+
         if (JintEnvironment.TryGetIdentifierEnvironmentWithBindingValue(
                 context.Engine.ExecutionContext.LexicalEnvironment,
                 name,
+                strict,
                 out var environmentRecord,
                 out var value))
         {
-            if (_evalOrArguments && StrictModeScope.IsStrictModeCode)
+            if (_evalOrArguments && strict)
             {
-                ExceptionHelper.ThrowSyntaxError(context.Engine.Realm);
+                Throw.SyntaxError(context.Engine.Realm);
             }
 
             var isInteger = value._type == InternalTypes.Integer;
@@ -163,7 +166,7 @@ internal sealed class JintUpdateExpression : JintExpression
                 }
             }
 
-            environmentRecord.SetMutableBinding(name.Key, newValue!, StrictModeScope.IsStrictModeCode);
+            environmentRecord.SetMutableBinding(name.Key, newValue!, strict);
             if (_prefix)
             {
                 return newValue;

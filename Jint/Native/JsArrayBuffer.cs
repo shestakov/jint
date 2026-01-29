@@ -15,6 +15,7 @@ public class JsArrayBuffer : ObjectInstance
 
     internal byte[]? _arrayBufferData;
     internal readonly int? _arrayBufferMaxByteLength;
+    internal bool _isImmutable;
 
     internal readonly JsValue _arrayBufferDetachKey = Undefined;
 
@@ -25,7 +26,7 @@ public class JsArrayBuffer : ObjectInstance
     {
         if (arrayBufferMaxByteLength is > int.MaxValue)
         {
-            ExceptionHelper.ThrowRangeError(engine.Realm, "arrayBufferMaxByteLength cannot be larger than int32.MaxValue");
+            Throw.RangeError(engine.Realm, "arrayBufferMaxByteLength cannot be larger than int32.MaxValue");
         }
 
         _prototype = engine.Intrinsics.ArrayBuffer.PrototypeObject;
@@ -37,7 +38,7 @@ public class JsArrayBuffer : ObjectInstance
     {
         if (byteLength > int.MaxValue)
         {
-            ExceptionHelper.ThrowRangeError(realm, "Array buffer allocation failed");
+            Throw.RangeError(realm, "Array buffer allocation failed");
         }
 
         return new byte[byteLength];
@@ -53,6 +54,11 @@ public class JsArrayBuffer : ObjectInstance
     internal virtual bool IsSharedArrayBuffer => false;
 
     /// <summary>
+    /// https://tc39.es/proposal-immutable-arraybuffer/#sec-isimmutablebuffer
+    /// </summary>
+    internal bool IsImmutableBuffer => _isImmutable;
+
+    /// <summary>
     /// https://tc39.es/ecma262/#sec-detacharraybuffer
     /// </summary>
     internal void DetachArrayBuffer(JsValue? key = null)
@@ -61,7 +67,7 @@ public class JsArrayBuffer : ObjectInstance
 
         if (!SameValue(_arrayBufferDetachKey, key))
         {
-            ExceptionHelper.ThrowTypeError(_engine.Realm);
+            Throw.TypeError(_engine.Realm);
         }
 
         _arrayBufferData = null;
@@ -142,7 +148,7 @@ public class JsArrayBuffer : ObjectInstance
 
             return value;
 #else
-            ExceptionHelper.ThrowNotImplementedException("Float16/Half type is not supported in this build");
+            Throw.NotImplementedException("Float16/Half type is not supported in this build");
             return default;
 #endif
 
@@ -201,7 +207,7 @@ public class JsArrayBuffer : ObjectInstance
 
         if (arrayValue is null)
         {
-            ExceptionHelper.ThrowArgumentOutOfRangeException(nameof(type), type.ToString());
+            Throw.ArgumentOutOfRangeException(nameof(type), type.ToString());
         }
 
         return arrayValue.Value;
@@ -243,7 +249,7 @@ public class JsArrayBuffer : ObjectInstance
 #if SUPPORTS_HALF
             rawBytes = BitConverter.GetBytes((Half) value.DoubleValue);
 #else
-            ExceptionHelper.ThrowNotImplementedException("Float16/Half type is not supported in this build");
+            Throw.NotImplementedException("Float16/Half type is not supported in this build");
             return default!;
 #endif
         }
@@ -268,7 +274,7 @@ public class JsArrayBuffer : ObjectInstance
         else
         {
             // inlined conversion for faster speed instead of getting the method in spec
-            var doubleValue  = value.DoubleValue;
+            var doubleValue = value.DoubleValue;
             var intValue = double.IsNaN(doubleValue) || doubleValue == 0 || double.IsInfinity(doubleValue)
                 ? 0
                 : (long) doubleValue;
@@ -289,32 +295,32 @@ public class JsArrayBuffer : ObjectInstance
 #if !NETSTANDARD2_1
                     rawBytes = BitConverter.GetBytes((short) intValue);
 #else
-                        BitConverter.TryWriteBytes(rawBytes, (short) intValue);
+                    BitConverter.TryWriteBytes(rawBytes, (short) intValue);
 #endif
                     break;
                 case TypedArrayElementType.Uint16:
 #if !NETSTANDARD2_1
                     rawBytes = BitConverter.GetBytes((ushort) intValue);
 #else
-                        BitConverter.TryWriteBytes(rawBytes, (ushort) intValue);
+                    BitConverter.TryWriteBytes(rawBytes, (ushort) intValue);
 #endif
                     break;
                 case TypedArrayElementType.Int32:
 #if !NETSTANDARD2_1
                     rawBytes = BitConverter.GetBytes((uint) intValue);
 #else
-                        BitConverter.TryWriteBytes(rawBytes, (uint) intValue);
+                    BitConverter.TryWriteBytes(rawBytes, (uint) intValue);
 #endif
                     break;
                 case TypedArrayElementType.Uint32:
 #if !NETSTANDARD2_1
                     rawBytes = BitConverter.GetBytes((uint) intValue);
 #else
-                        BitConverter.TryWriteBytes(rawBytes, (uint) intValue);
+                    BitConverter.TryWriteBytes(rawBytes, (uint) intValue);
 #endif
                     break;
                 default:
-                    ExceptionHelper.ThrowArgumentOutOfRangeException();
+                    Throw.ArgumentOutOfRangeException();
                     return null;
             }
         }
@@ -332,15 +338,15 @@ public class JsArrayBuffer : ObjectInstance
     {
         if (_arrayBufferMaxByteLength is null)
         {
-            ExceptionHelper.ThrowTypeError(_engine.Realm);
+            Throw.TypeError(_engine.Realm);
         }
 
         if (newByteLength > _arrayBufferMaxByteLength)
         {
-            ExceptionHelper.ThrowRangeError(_engine.Realm);
+            Throw.RangeError(_engine.Realm);
         }
 
-        var oldBlock = _arrayBufferData ?? System.Array.Empty<byte>();
+        var oldBlock = _arrayBufferData ?? [];
         var newBlock = CreateByteDataBlock(_engine.Realm, newByteLength);
         var copyLength = System.Math.Min(newByteLength, ArrayBufferByteLength);
 
@@ -352,7 +358,18 @@ public class JsArrayBuffer : ObjectInstance
     {
         if (IsDetachedBuffer)
         {
-            ExceptionHelper.ThrowTypeError(_engine.Realm, "ArrayBuffer has been detached");
+            Throw.TypeError(_engine.Realm, "ArrayBuffer has been detached");
+        }
+    }
+
+    /// <summary>
+    /// https://tc39.es/proposal-immutable-arraybuffer/#sec-isimmutablebuffer
+    /// </summary>
+    internal void AssertNotImmutable()
+    {
+        if (IsImmutableBuffer)
+        {
+            Throw.TypeError(_engine.Realm, "Cannot modify an immutable ArrayBuffer");
         }
     }
 }

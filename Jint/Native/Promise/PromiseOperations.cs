@@ -37,24 +37,28 @@ internal static class PromiseOperations
             {
                 try
                 {
-                    var result = handler.Call(JsValue.Undefined, new[] {value});
-                    promiseCapability.Resolve.Call(JsValue.Undefined, new[] {result});
+                    var result = handler.Call(JsValue.Undefined, value);
+                    // If promiseCapability is undefined, just return (spec step g)
+                    promiseCapability?.Resolve.Call(JsValue.Undefined, result);
                 }
                 catch (JavaScriptException e)
                 {
-                    promiseCapability.Reject.Call(JsValue.Undefined, new[] {e.Error});
+                    // If promiseCapability is undefined, this is an assertion failure per spec
+                    // but we need to handle it gracefully
+                    promiseCapability?.Reject.Call(JsValue.Undefined, e.Error);
                 }
             }
             else
             {
+                // If no handler, capability must be defined per spec
                 switch (reaction.Type)
                 {
                     case ReactionType.Fulfill:
-                        promiseCapability.Resolve.Call(JsValue.Undefined, new[] {value});
+                        promiseCapability?.Resolve.Call(JsValue.Undefined, value);
                         break;
 
                     case ReactionType.Reject:
-                        promiseCapability.Reject.Call(JsValue.Undefined, new[] {value});
+                        promiseCapability?.Reject.Call(JsValue.Undefined, value);
                         break;
 
                     default:
@@ -86,11 +90,11 @@ internal static class PromiseOperations
 
             try
             {
-                thenMethod.Call(thenable, new[] { resolve as JsValue, reject });
+                thenMethod.Call(thenable, resolve as JsValue, reject);
             }
             catch (JavaScriptException e)
             {
-                reject.Call(JsValue.Undefined, new[] { e.Error });
+                reject.Call(JsValue.Undefined, [e.Error]);
             }
         };
     }
@@ -138,7 +142,7 @@ internal static class PromiseOperations
 
                 break;
             default:
-                ExceptionHelper.ThrowArgumentOutOfRangeException();
+                Throw.ArgumentOutOfRangeException();
                 break;
         }
 

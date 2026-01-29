@@ -1,6 +1,7 @@
 using Jint.Native.Object;
 using Jint.Runtime;
 using Jint.Runtime.Descriptors;
+using Jint.Runtime.Interop;
 
 namespace Jint.Native.Error;
 
@@ -25,20 +26,29 @@ public sealed class ErrorConstructor : Constructor
 
     internal ErrorPrototype PrototypeObject { get; }
 
-    protected internal override JsValue Call(JsValue thisObject, JsValue[] arguments)
+    protected override void Initialize()
+    {
+        var properties = new PropertyDictionary(3, checkExistingKeys: false)
+        {
+            ["isError"] = new PropertyDescriptor(new PropertyDescriptor(new ClrFunction(Engine, "isError", IsError, 1), PropertyFlag.NonEnumerable)),
+        };
+        SetProperties(properties);
+    }
+
+    protected internal override JsValue Call(JsValue thisObject, JsCallArguments arguments)
     {
         return Construct(arguments, this);
     }
 
     public ObjectInstance Construct(string? message = null)
     {
-        return Construct(message != null ? new JsValue[]{ message } : System.Array.Empty<JsValue>(), this);
+        return Construct(message != null ? [message] : [], this);
     }
 
     /// <summary>
     /// https://tc39.es/ecma262/#sec-nativeerror
     /// </summary>
-    public override ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
+    public override ObjectInstance Construct(JsCallArguments arguments, JsValue newTarget)
     {
         var o = OrdinaryCreateFromConstructor(
             newTarget,
@@ -80,7 +90,15 @@ public sealed class ErrorConstructor : Constructor
 
             // If the current function is the ErrorConstructor itself (i.e. "throw new Error(...)" was called
             // from script), exclude it from the stack trace, because the trace should begin at the throw point.
-            return callStack.BuildCallStackString(lastSyntaxNode.Location, currentFunction == this ? 1 : 0);
+            return callStack.BuildCallStackString(_engine, lastSyntaxNode.Location, currentFunction == this ? 1 : 0);
         }
+    }
+
+    /// <summary>
+    /// https://tc39.es/proposal-is-error/
+    /// </summary>
+    private static JsValue IsError(JsValue? thisObj, JsCallArguments arguments)
+    {
+        return arguments.At(0) is JsError;
     }
 }

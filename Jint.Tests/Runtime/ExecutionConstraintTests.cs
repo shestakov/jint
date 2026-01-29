@@ -14,6 +14,20 @@ public class ExecutionConstraintTests
     }
 
     [Fact]
+    public void ShouldCountStatementsPrecisely()
+    {
+        var script = "var x = 0; x++; x + 5";
+
+        // Should not throw if MaxStatements is not exceeded.
+        new Engine(cfg => cfg.MaxStatements(3)).Execute(script);
+
+        // Should throw if MaxStatements is exceeded.
+        Assert.Throws<StatementsCountOverflowException>(
+            () => new Engine(cfg => cfg.MaxStatements(2)).Evaluate(script)
+        );
+    }
+
+    [Fact]
     public void ShouldThrowMemoryLimitExceeded()
     {
         Assert.Throws<MemoryLimitExceededException>(
@@ -35,18 +49,38 @@ public class ExecutionConstraintTests
         Assert.Throws<ExecutionCanceledException>(
             () =>
             {
-                using (var tcs = new CancellationTokenSource())
+                using (var cts = new CancellationTokenSource())
                 using (var waitHandle = new ManualResetEvent(false))
+                using (var cancellationTokenSet = new ManualResetEvent(initialState: false))
                 {
-                    var engine = new Engine(cfg => cfg.CancellationToken(tcs.Token));
+                    var engine = new Engine(cfg => cfg.CancellationToken(cts.Token));
 
-                    ThreadPool.QueueUserWorkItem(state =>
+                    /*
+                     * To ensure that the action "threadPoolAction" has actually been called by the ThreadPool
+                     * (which can happen very late, depending on the ThreadPool usage, etc.), the
+                     * "cancellationTokenSet" event will be an indicator for that.
+                     *
+                     * 1. The "cancellationTokenSet" will be set after the "cts" has been cancelled.
+                     * 2. Within the JS, the "test" code will only start as soon as the "cancellationTokenSet"
+                     *    event will be set.
+                     * 3. The cancellationToken and its source has not been used on purpose for this test to
+                     *    not mix "test infrastructure" and "test code".
+                     * 4. To verify that this test still works under heavy load, you can add
+                     *    a "Thread.Sleep(10000)" call anywhere within the "threadPoolAction" action.
+                     */
+
+                    WaitCallback threadPoolAction = _ =>
                     {
                         waitHandle.WaitOne();
-                        tcs.Cancel();
-                    });
+                        cts.Cancel();
+                        cancellationTokenSet.Set();
+                    };
+                    ThreadPool.QueueUserWorkItem(threadPoolAction);
 
                     engine.SetValue("waitHandle", waitHandle);
+                    engine.SetValue("waitForTokenToBeSet", new Action(() => cancellationTokenSet.WaitOne()));
+                    engine.SetValue("mustNotBeCalled", new Action(() =>
+                        throw new InvalidOperationException("A cancellation of the script execution has been requested, but the script did continue to run.")));
                     engine.Evaluate(@"
                             function sleep(millisecondsTimeout) {
                                 var totalMilliseconds = new Date().getTime() + millisecondsTimeout;
@@ -56,11 +90,16 @@ public class ExecutionConstraintTests
 
                             sleep(100);
                             waitHandle.Set();
+                            waitForTokenToBeSet();
+
+                            // Now it is ensured that the cancellationToken has been cancelled. 
+                            // The following JS code execution should get aborted by the engine.
                             sleep(1000);
                             sleep(1000);
                             sleep(1000);
                             sleep(1000);
                             sleep(1000);
+                            mustNotBeCalled();
                         ");
                 }
             }
@@ -287,7 +326,7 @@ myarr[0](0);
     {
         var engine = new Engine(options =>
         {
-            options.TimeoutInterval(TimeSpan.FromMilliseconds(100));
+            options.TimeoutInterval(TimeSpan.FromMilliseconds(1000));
         });
         var myApi = new MyApi();
 
@@ -298,7 +337,7 @@ myarr[0](0);
         foreach (var callback in dataReceivedCallbacks)
         {
             engine.Invoke(callback.Value, "Data Received #1");
-            Thread.Sleep(101);
+            Thread.Sleep(200);
             engine.Invoke(callback.Value, "Data Received #2");
         }
     }

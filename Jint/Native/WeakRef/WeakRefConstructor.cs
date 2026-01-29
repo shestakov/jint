@@ -27,18 +27,18 @@ internal sealed class WeakRefConstructor : Constructor
 
     private WeakRefPrototype PrototypeObject { get; }
 
-    public override ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
+    public override ObjectInstance Construct(JsCallArguments arguments, JsValue newTarget)
     {
         if (newTarget.IsUndefined())
         {
-            ExceptionHelper.ThrowTypeError(_realm);
+            Throw.TypeError(_realm);
         }
 
         var target = arguments.At(0);
 
         if (!target.CanBeHeldWeakly(_engine.GlobalSymbolRegistry))
         {
-            ExceptionHelper.ThrowTypeError(_realm, "WeakRef: target must be an object or symbol");
+            Throw.TypeError(_realm, "WeakRef: target must be an object or symbol");
         }
 
         var weakRef = OrdinaryCreateFromConstructor(

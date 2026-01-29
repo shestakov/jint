@@ -106,7 +106,7 @@ public static class OptionsExtensions
     /// </summary>
     public static Options DisableStringCompilation(this Options options, bool disable = true)
     {
-        options.StringCompilationAllowed = !disable;
+        options.Host.StringCompilationAllowed = !disable;
         return options;
     }
 
@@ -124,6 +124,16 @@ public static class OptionsExtensions
     public static Options SetWrapObjectHandler(this Options options, Options.WrapObjectDelegate wrapObjectHandler)
     {
         options.Interop.WrapObjectHandler = wrapObjectHandler;
+        return options;
+    }
+
+    /// <summary>
+    /// Sets the handler used to build stack traces. This is useful if the code currently
+    /// running was transpiled (eg. TypeScript) and the source map of original code is available.
+    /// </summary>
+    public static Options SetBuildCallStackHandler(this Options options, Options.BuildCallStackDelegate buildCallStackHandler)
+    {
+        options.Interop.BuildCallStackHandler = buildCallStackHandler;
         return options;
     }
 

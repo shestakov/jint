@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Reflection;
@@ -45,6 +46,30 @@ public class ObjectWrapper : ObjectInstance, IObjectWrapper, IEquatable<ObjectWr
                 _prototype = engine.Intrinsics.Array.PrototypeObject;
             }
         }
+
+        if (_typeDescriptor.IsDisposable)
+        {
+            SetProperty(GlobalSymbolRegistry.Dispose, new PropertyDescriptor(new ClrFunction(engine, "dispose", static (thisObject, _) =>
+            {
+                ((thisObject as ObjectWrapper)?.Target as IDisposable)?.Dispose();
+                return Undefined;
+            }), PropertyFlag.NonEnumerable));
+        }
+
+#if SUPPORTS_ASYNC_DISPOSE
+        if (_typeDescriptor.IsAsyncDisposable)
+        {
+            SetProperty(GlobalSymbolRegistry.AsyncDispose, new PropertyDescriptor(new ClrFunction(engine, "asyncDispose", (thisObject, _) =>
+            {
+                var target = ((thisObject as ObjectWrapper)?.Target as IAsyncDisposable)?.DisposeAsync();
+                if (target is not null)
+                {
+                    return ConvertAwaitableToPromise(engine, target);
+                }
+                return Undefined;
+            }), PropertyFlag.NonEnumerable));
+        }
+#endif
     }
 
     /// <summary>
@@ -54,7 +79,7 @@ public class ObjectWrapper : ObjectInstance, IObjectWrapper, IEquatable<ObjectWr
     {
         if (target == null)
         {
-            ExceptionHelper.ThrowArgumentNullException(nameof(target));
+            Throw.ArgumentNullException(nameof(target));
         }
 
         // STJ integration
@@ -74,48 +99,69 @@ public class ObjectWrapper : ObjectInstance, IObjectWrapper, IEquatable<ObjectWr
         return new ObjectWrapper(engine, target, type);
     }
 
+    private static readonly ConcurrentDictionary<Type, Type?> _arrayLikeWrapperResolution = new();
+
     private static bool TryBuildArrayLikeWrapper(
         Engine engine,
         object target,
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)] Type type,
         [NotNullWhen(true)] out ArrayLikeWrapper? result)
     {
-#pragma warning disable IL2055
-#pragma warning disable IL3050
-
         result = null;
 
-        // check for generic interfaces
-        foreach (var i in type.GetInterfaces())
+        var arrayWrapperType = _arrayLikeWrapperResolution.GetOrAdd(type, static t =>
         {
-            if (!i.IsGenericType)
+#pragma warning disable IL2055
+#pragma warning disable IL2070
+#pragma warning disable IL3050
+
+            // check for generic interfaces
+            foreach (var i in t.GetInterfaces())
             {
-                continue;
+                if (!i.IsGenericType)
+                {
+                    continue;
+                }
+
+                var arrayItemType = i.GenericTypeArguments[0];
+
+                if (i.GetGenericTypeDefinition() == typeof(IList<>))
+                {
+                    return typeof(GenericListWrapper<>).MakeGenericType(arrayItemType);
+                }
+
+                if (i.GetGenericTypeDefinition() == typeof(IReadOnlyList<>))
+                {
+                    return typeof(ReadOnlyListWrapper<>).MakeGenericType(arrayItemType);
+                }
             }
-
-            var arrayItemType = i.GenericTypeArguments[0];
-
-            if (i.GetGenericTypeDefinition() == typeof(IList<>))
-            {
-                var arrayWrapperType = typeof(GenericListWrapper<>).MakeGenericType(arrayItemType);
-                result = (ArrayLikeWrapper) Activator.CreateInstance(arrayWrapperType, engine, target, type)!;
-                break;
-            }
-
-            if (i.GetGenericTypeDefinition() == typeof(IReadOnlyList<>))
-            {
-                var arrayWrapperType = typeof(ReadOnlyListWrapper<>).MakeGenericType(arrayItemType);
-                result = (ArrayLikeWrapper) Activator.CreateInstance(arrayWrapperType, engine, target, type)!;
-                break;
-            }
-        }
-
 #pragma warning restore IL3050
+#pragma warning restore IL2070
 #pragma warning restore IL2055
 
-        // least specific
-        if (result is null && target is IList list)
+            return null;
+        });
+
+        if (arrayWrapperType is not null)
         {
+            // Activator.CreateInstance may fail in trimmed/AOT scenarios where the constructor
+            // was removed by the linker - fall back to the non-generic ListWrapper in that case
+            try
+            {
+                result = (ArrayLikeWrapper) Activator.CreateInstance(arrayWrapperType, engine, target, type)!;
+            }
+            catch (MissingMethodException)
+            {
+                // Constructor was trimmed, fall back to non-generic wrapper
+                if (target is IList list)
+                {
+                    result = new ListWrapper(engine, list, type);
+                }
+            }
+        }
+        else if (target is IList list)
+        {
+            // least specific
             result = new ListWrapper(engine, list, type);
         }
 
@@ -141,6 +187,25 @@ public class ObjectWrapper : ObjectInstance, IObjectWrapper, IEquatable<ObjectWr
             {
                 // can try utilize fast path
                 var accessor = _engine.Options.Interop.TypeResolver.GetAccessor(_engine, ClrType, member, mustBeReadable: false, mustBeWritable: true);
+                var actualType = Target.GetType();
+                if (ClrType != actualType)
+                {
+                    // When the declared type differs from the actual runtime type:
+                    // If only an indexer was found, check if the runtime type has a direct property/field/method
+                    // that should take precedence over the indexer
+                    if (accessor is IndexerAccessor)
+                    {
+                        var runtimeAccessor = _engine.Options.Interop.TypeResolver.GetAccessor(_engine, actualType, member, mustBeReadable: false, mustBeWritable: true);
+                        if (runtimeAccessor is not IndexerAccessor && runtimeAccessor != ConstantValueAccessor.NullAccessor)
+                        {
+                            accessor = runtimeAccessor;
+                        }
+                    }
+                    else if (ReferenceEquals(accessor, ConstantValueAccessor.NullAccessor))
+                    {
+                        accessor = _engine.Options.Interop.TypeResolver.GetAccessor(_engine, actualType, member, mustBeReadable: false, mustBeWritable: true);
+                    }
+                }
 
                 if (ReferenceEquals(accessor, ConstantValueAccessor.NullAccessor))
                 {
@@ -197,13 +262,28 @@ public class ObjectWrapper : ObjectInstance, IObjectWrapper, IEquatable<ObjectWr
 
     public override JsValue Get(JsValue property, JsValue receiver)
     {
-        if (!_typeDescriptor.IsDictionary
-            && Target is ICollection c
-            && CommonProperties.Length.Equals(property))
+        // check fast path before producing properties
+        if (ReferenceEquals(receiver, this) && property.IsString())
         {
-            return JsNumber.Create(c.Count);
+            // try some fast paths
+            if (!_typeDescriptor.IsDictionary)
+            {
+                if (Target is ICollection c && CommonProperties.Length.Equals(property))
+                {
+                    return JsNumber.Create(c.Count);
+                }
+            }
+            else
+            {
+                if (_typeDescriptor.IsStringKeyedGenericDictionary
+                    && _typeDescriptor.TryGetValue(Target, property.ToString(), out var value))
+                {
+                    return FromObject(_engine, value);
+                }
+            }
         }
 
+        // slow path requires us to create a property descriptor that might get cached or not
         var desc = GetOwnProperty(property, mustBeReadable: true, mustBeWritable: false);
         if (desc != PropertyDescriptor.Undefined)
         {
@@ -215,7 +295,7 @@ public class ObjectWrapper : ObjectInstance, IObjectWrapper, IEquatable<ObjectWr
 
     public override List<JsValue> GetOwnPropertyKeys(Types types = Types.Empty | Types.String | Types.Symbol)
     {
-        return new List<JsValue>(EnumerateOwnPropertyKeys(types));
+        return [.. EnumerateOwnPropertyKeys(types)];
     }
 
     public override IEnumerable<KeyValuePair<JsValue, PropertyDescriptor>> GetOwnProperties()
@@ -225,7 +305,7 @@ public class ObjectWrapper : ObjectInstance, IObjectWrapper, IEquatable<ObjectWr
             yield return new KeyValuePair<JsValue, PropertyDescriptor>(key, GetOwnProperty(key));
         }
     }
-    
+
     private IEnumerable<JsValue> EnumerateOwnPropertyKeys(Types types)
     {
         // prefer object order, add possible other properties after
@@ -255,17 +335,16 @@ public class ObjectWrapper : ObjectInstance, IObjectWrapper, IEquatable<ObjectWr
         {
             var interopOptions = _engine.Options.Interop;
 
-            // we take public properties, fields and methods
-            var bindingFlags = BindingFlags.Static | BindingFlags.Instance | BindingFlags.Public;
-            if (interopOptions.ObjectWrapperReportOnlyDeclaredMembers)
-            {
-                bindingFlags |= BindingFlags.DeclaredOnly;
-            }
-
+            // we take properties, fields and methods
             if ((interopOptions.ObjectWrapperReportedMemberTypes & MemberTypes.Property) == MemberTypes.Property)
             {
-                foreach (var p in ClrType.GetProperties(bindingFlags))
+                foreach (var p in ClrType.GetProperties(interopOptions.ObjectWrapperReportedPropertyBindingFlags))
                 {
+                    if (!interopOptions.TypeResolver.Filter(_engine, ClrType, p))
+                    {
+                        continue;
+                    }
+
                     var indexParameters = p.GetIndexParameters();
                     if (indexParameters.Length == 0)
                     {
@@ -276,17 +355,23 @@ public class ObjectWrapper : ObjectInstance, IObjectWrapper, IEquatable<ObjectWr
 
             if ((interopOptions.ObjectWrapperReportedMemberTypes & MemberTypes.Field) == MemberTypes.Field)
             {
-                foreach (var f in ClrType.GetFields(bindingFlags))
+                foreach (var f in ClrType.GetFields(interopOptions.ObjectWrapperReportedFieldBindingFlags))
                 {
+                    if (!interopOptions.TypeResolver.Filter(_engine, ClrType, f))
+                    {
+                        continue;
+                    }
+
                     yield return JsString.Create(f.Name);
                 }
             }
 
             if ((interopOptions.ObjectWrapperReportedMemberTypes & MemberTypes.Method) == MemberTypes.Method)
             {
-                foreach (var m in ClrType.GetMethods(bindingFlags | BindingFlags.DeclaredOnly))
+                foreach (var m in ClrType.GetMethods(interopOptions.ObjectWrapperReportedMethodBindingFlags))
                 {
-                    if (m.IsSpecialName)
+                    // we won't report anything from base object as it would usually not be something to expect from JS perspective
+                    if (m.DeclaringType == typeof(object) || m.IsSpecialName || !interopOptions.TypeResolver.Filter(_engine, ClrType, m))
                     {
                         continue;
                     }
@@ -357,6 +442,27 @@ public class ObjectWrapper : ObjectInstance, IObjectWrapper, IEquatable<ObjectWr
         }
 
         var accessor = _engine.Options.Interop.TypeResolver.GetAccessor(_engine, ClrType, member, mustBeReadable, mustBeWritable);
+        var actualType = Target.GetType();
+        if (ClrType != actualType)
+        {
+            // When the declared type differs from the actual runtime type:
+            // - If no accessor was found, fall back to the runtime type (original behavior)
+            // - If only an indexer was found, check if the runtime type has a direct property/field/method
+            //   that should take precedence over the indexer
+            if (accessor == ConstantValueAccessor.NullAccessor)
+            {
+                accessor = _engine.Options.Interop.TypeResolver.GetAccessor(_engine, actualType, member, mustBeReadable, mustBeWritable);
+            }
+            else if (accessor is IndexerAccessor)
+            {
+                var runtimeAccessor = _engine.Options.Interop.TypeResolver.GetAccessor(_engine, actualType, member, mustBeReadable, mustBeWritable);
+                if (runtimeAccessor is not IndexerAccessor && runtimeAccessor != ConstantValueAccessor.NullAccessor)
+                {
+                    // Prefer direct property/field/method from runtime type over indexer from declared type
+                    accessor = runtimeAccessor;
+                }
+            }
+        }
         var descriptor = accessor.CreatePropertyDescriptor(_engine, Target, member, enumerable: !isDictionary);
         if (!isDictionary
             && !ReferenceEquals(descriptor, PropertyDescriptor.Undefined)
@@ -405,8 +511,11 @@ public class ObjectWrapper : ObjectInstance, IObjectWrapper, IEquatable<ObjectWr
         return type;
     }
 
-    private static JsValue Iterator(JsValue thisObject, JsValue[] arguments)
+    private static JsValue Iterator(JsValue thisObject, JsCallArguments arguments)
     {
+        if (thisObject is JsProxy proxy)
+            return Iterator(proxy._target, arguments);
+
         var wrapper = (ObjectWrapper) thisObject;
 
         return wrapper._typeDescriptor.IsDictionary
@@ -414,8 +523,11 @@ public class ObjectWrapper : ObjectInstance, IObjectWrapper, IEquatable<ObjectWr
             : new EnumerableIterator(wrapper._engine, (IEnumerable) wrapper.Target);
     }
 
-    private static JsNumber GetLength(JsValue thisObject, JsValue[] arguments)
+    private static JsNumber GetLength(JsValue thisObject, JsCallArguments arguments)
     {
+        if (thisObject is JsProxy proxy)
+            return GetLength(proxy._target, arguments);
+
         var wrapper = (ObjectWrapper) thisObject;
         return JsNumber.Create((int) (wrapper._typeDescriptor.LengthProperty?.GetValue(wrapper.Target) ?? 0));
     }

@@ -1,6 +1,5 @@
 #pragma warning disable CA1859 // Use concrete types when possible for improved performance -- most of prototype methods return JsValue
 
-using Jint.Collections;
 using Jint.Native.Array;
 using Jint.Native.Symbol;
 using Jint.Runtime;
@@ -38,7 +37,7 @@ public sealed class ObjectPrototype : Prototype
                 new ClrFunction(Engine, "get __proto__", (thisObject, _) => TypeConverter.ToObject(_realm, thisObject).GetPrototypeOf() ?? Null, 0, LengthFlags),
                 new ClrFunction(Engine, "set __proto__", (thisObject, arguments) =>
                 {
-                    TypeConverter.CheckObjectCoercible(_engine, thisObject);
+                    TypeConverter.RequireObjectCoercible(_engine, thisObject);
 
                     var proto = arguments.At(0);
                     if (!proto.IsObject() && !proto.IsNull() || thisObject is not ObjectInstance objectInstance)
@@ -48,7 +47,7 @@ public sealed class ObjectPrototype : Prototype
 
                     if (!objectInstance.SetPrototypeOf(proto))
                     {
-                        ExceptionHelper.ThrowTypeError(_realm, "Invalid prototype");
+                        Throw.TypeError(_realm, "Invalid prototype");
                     }
 
                     return Undefined;
@@ -57,11 +56,16 @@ public sealed class ObjectPrototype : Prototype
             ["toString"] = new LazyPropertyDescriptor<ObjectPrototype>(this, static prototype => new ClrFunction(prototype._engine, "toString", prototype.ToObjectString, 0, LengthFlags), PropertyFlags),
             ["toLocaleString"] = new LazyPropertyDescriptor<ObjectPrototype>(this, static prototype => new ClrFunction(prototype._engine, "toLocaleString", prototype.ToLocaleString, 0, LengthFlags), PropertyFlags),
             ["valueOf"] = new LazyPropertyDescriptor<ObjectPrototype>(this, static prototype => new ClrFunction(prototype._engine, "valueOf", prototype.ValueOf, 0, LengthFlags), PropertyFlags),
-            ["hasOwnProperty"] = new LazyPropertyDescriptor<ObjectPrototype>(this, static prototype => new ClrFunction(prototype._engine, "hasOwnProperty",prototype. HasOwnProperty, 1, LengthFlags), PropertyFlags),
+            ["hasOwnProperty"] = new LazyPropertyDescriptor<ObjectPrototype>(this, static prototype => new ClrFunction(prototype._engine, "hasOwnProperty", prototype.HasOwnProperty, 1, LengthFlags), PropertyFlags),
             ["isPrototypeOf"] = new LazyPropertyDescriptor<ObjectPrototype>(this, static prototype => new ClrFunction(prototype._engine, "isPrototypeOf", prototype.IsPrototypeOf, 1, LengthFlags), PropertyFlags),
             ["propertyIsEnumerable"] = new LazyPropertyDescriptor<ObjectPrototype>(this, static prototype => new ClrFunction(prototype._engine, "propertyIsEnumerable", prototype.PropertyIsEnumerable, 1, LengthFlags), PropertyFlags)
         };
         SetProperties(properties);
+    }
+
+    internal override bool SetPrototypeOf(JsValue value)
+    {
+        return SameValue(value, _prototype ?? Null);
     }
 
     public override bool DefineOwnProperty(JsValue property, PropertyDescriptor desc)
@@ -92,7 +96,7 @@ public sealed class ObjectPrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-object.prototype.__defineGetter__
     /// </summary>
-    private JsValue DefineGetter(JsValue thisObject, JsValue[] arguments)
+    private JsValue DefineGetter(JsValue thisObject, JsCallArguments arguments)
     {
         var o = TypeConverter.ToObject(_realm, thisObject);
         var p = arguments.At(0);
@@ -100,7 +104,7 @@ public sealed class ObjectPrototype : Prototype
 
         if (!getter.IsCallable)
         {
-            ExceptionHelper.ThrowTypeError(_realm, "Target is not callable");
+            Throw.TypeError(_realm, "Target is not callable");
         }
 
         var desc = new GetSetPropertyDescriptor(getter, null, enumerable: true, configurable: true);
@@ -113,7 +117,7 @@ public sealed class ObjectPrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-object.prototype.__defineSetter__
     /// </summary>
-    private JsValue DefineSetter(JsValue thisObject, JsValue[] arguments)
+    private JsValue DefineSetter(JsValue thisObject, JsCallArguments arguments)
     {
         var o = TypeConverter.ToObject(_realm, thisObject);
         var p = arguments.At(0);
@@ -121,7 +125,7 @@ public sealed class ObjectPrototype : Prototype
 
         if (!setter.IsCallable)
         {
-            ExceptionHelper.ThrowTypeError(_realm, "Target is not callable");
+            Throw.TypeError(_realm, "Target is not callable");
         }
 
         var desc = new GetSetPropertyDescriptor(null, setter, enumerable: true, configurable: true);
@@ -134,7 +138,7 @@ public sealed class ObjectPrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-object.prototype.__lookupGetter__
     /// </summary>
-    private JsValue LookupGetter(JsValue thisObject, JsValue[] arguments)
+    private JsValue LookupGetter(JsValue thisObject, JsCallArguments arguments)
     {
         var o = TypeConverter.ToObject(_realm, thisObject);
         var key = TypeConverter.ToPropertyKey(arguments.At(0));
@@ -162,7 +166,7 @@ public sealed class ObjectPrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-object.prototype.__lookupSetter__
     /// </summary>
-    private JsValue LookupSetter(JsValue thisObject, JsValue[] arguments)
+    private JsValue LookupSetter(JsValue thisObject, JsCallArguments arguments)
     {
         var o = TypeConverter.ToObject(_realm, thisObject);
         var key = TypeConverter.ToPropertyKey(arguments.At(0));
@@ -187,7 +191,7 @@ public sealed class ObjectPrototype : Prototype
         }
     }
 
-    private JsValue PropertyIsEnumerable(JsValue thisObject, JsValue[] arguments)
+    private JsValue PropertyIsEnumerable(JsValue thisObject, JsCallArguments arguments)
     {
         var p = TypeConverter.ToPropertyKey(arguments[0]);
         var o = TypeConverter.ToObject(_realm, thisObject);
@@ -199,13 +203,13 @@ public sealed class ObjectPrototype : Prototype
         return desc.Enumerable;
     }
 
-    private JsValue ValueOf(JsValue thisObject, JsValue[] arguments)
+    private JsValue ValueOf(JsValue thisObject, JsCallArguments arguments)
     {
         var o = TypeConverter.ToObject(_realm, thisObject);
         return o;
     }
 
-    private JsValue IsPrototypeOf(JsValue thisObject, JsValue[] arguments)
+    private JsValue IsPrototypeOf(JsValue thisObject, JsCallArguments arguments)
     {
         var arg = arguments[0];
         if (!arg.IsObject())
@@ -235,15 +239,15 @@ public sealed class ObjectPrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-object.prototype.tolocalestring
     /// </summary>
-    private JsValue ToLocaleString(JsValue thisObject, JsValue[] arguments)
+    private JsValue ToLocaleString(JsValue thisObject, JsCallArguments arguments)
     {
-        return Invoke(thisObject, "toString", System.Array.Empty<JsValue>());
+        return Invoke(thisObject, "toString", []);
     }
 
     /// <summary>
     /// https://tc39.es/ecma262/#sec-object.prototype.tostring
     /// </summary>
-    internal JsValue ToObjectString(JsValue thisObject, JsValue[] arguments)
+    internal JsValue ToObjectString(JsValue thisObject, JsCallArguments arguments)
     {
         if (thisObject.IsUndefined())
         {
@@ -281,7 +285,7 @@ public sealed class ObjectPrototype : Prototype
     /// <summary>
     /// http://www.ecma-international.org/ecma-262/5.1/#sec-15.2.4.5
     /// </summary>
-    private JsValue HasOwnProperty(JsValue thisObject, JsValue[] arguments)
+    private JsValue HasOwnProperty(JsValue thisObject, JsCallArguments arguments)
     {
         var p = TypeConverter.ToPropertyKey(arguments[0]);
         var o = TypeConverter.ToObject(_realm, thisObject);

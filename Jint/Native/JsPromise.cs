@@ -54,7 +54,7 @@ internal sealed class JsPromise : ObjectInstance
     }
 
     // https://tc39.es/ecma262/#sec-promise-resolve-functions
-    private JsValue Resolve(JsValue thisObject, JsValue[] arguments)
+    private JsValue Resolve(JsValue thisObject, JsCallArguments arguments)
     {
         var result = arguments.At(0);
         return Resolve(result);
@@ -97,7 +97,7 @@ internal sealed class JsPromise : ObjectInstance
     }
 
     // https://tc39.es/ecma262/#sec-promise-reject-functions
-    private JsValue Reject(JsValue thisObject, JsValue[] arguments)
+    private JsValue Reject(JsValue thisObject, JsCallArguments arguments)
     {
         // Note that alreadyResolved logic lives in CreateResolvingFunctions method
 
@@ -120,7 +120,7 @@ internal sealed class JsPromise : ObjectInstance
     {
         if (State != PromiseState.Pending)
         {
-            ExceptionHelper.ThrowInvalidOperationException("Promise should be in Pending state");
+            Throw.InvalidOperationException("Promise should be in Pending state");
         }
 
         Settle(PromiseState.Rejected, reason);
@@ -141,7 +141,7 @@ internal sealed class JsPromise : ObjectInstance
     {
         if (State != PromiseState.Pending)
         {
-            ExceptionHelper.ThrowInvalidOperationException("Promise should be in Pending state");
+            Throw.InvalidOperationException("Promise should be in Pending state");
         }
 
         Settle(PromiseState.Fulfilled, result);

@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Linq;
 using System.Reflection;
 using Jint.Native;
+using Jint.Native.Function;
 using Jint.Native.Object;
 using Jint.Runtime;
 using Jint.Runtime.Interop;
@@ -10,6 +11,8 @@ using Jint.Runtime.Debugger;
 using Jint.Runtime.Descriptors;
 using Jint.Runtime.Modules;
 using Jint.Runtime.CallStack;
+using Jint.Native.Intl;
+using Jint.Native.Temporal;
 
 namespace Jint;
 
@@ -26,6 +29,10 @@ public class Options
     public delegate ObjectInstance? WrapObjectDelegate(Engine engine, object target, Type? type);
 
     public delegate bool ExceptionHandlerDelegate(Exception exception);
+
+    public delegate string? BuildCallStackDelegate(string shortDescription, SourceLocation location, string[]? arguments);
+
+    public delegate string SerializeToJsonDelegate(object? target, string space, string? currentIndent);
 
     /// <summary>
     /// Execution constraints for the engine.
@@ -45,12 +52,22 @@ public class Options
     /// <summary>
     /// Host options.
     /// </summary>
-    internal HostOptions Host { get; } = new();
+    public HostOptions Host { get; } = new();
 
     /// <summary>
     /// Module options
     /// </summary>
     public ModuleOptions Modules { get; } = new();
+
+    /// <summary>
+    /// Internationalization (Intl) options.
+    /// </summary>
+    public IntlOptions Intl { get; } = new();
+
+    /// <summary>
+    /// Temporal API options.
+    /// </summary>
+    public TemporalOptions Temporal { get; } = new();
 
     /// <summary>
     /// Whether the code should be always considered to be in strict mode. Can improve performance.
@@ -61,7 +78,6 @@ public class Options
     /// The culture the engine runs on, defaults to current culture.
     /// </summary>
     public CultureInfo Culture { get; set; } = _defaultCulture;
-
 
     /// <summary>
     /// Configures a time system to use. Defaults to DefaultTimeSystem using local time.
@@ -92,7 +108,12 @@ public class Options
     /// <remarks>
     /// https://tc39.es/ecma262/#sec-hostensurecancompilestrings
     /// </remarks>
-    public bool StringCompilationAllowed { get; set; } = true;
+    [Obsolete("Use Options.Host.StringCompilationAllowed")]
+    public bool StringCompilationAllowed
+    {
+        get => Host.StringCompilationAllowed;
+        set => Host.StringCompilationAllowed = value;
+    }
 
     /// <summary>
     /// Options for the built-in JSON (de)serializer which
@@ -298,6 +319,13 @@ public class Options
         public WrapObjectDelegate WrapObjectHandler { get; set; } = static (engine, target, type) => ObjectWrapper.Create(engine, target, type);
 
         /// <summary>
+        /// The handler used to build stack traces. Changing this enables mapping
+        /// stack traces to code different from the code being executed, eg. when
+        /// executing code transpiled from TypeScript.
+        /// </summary>
+        public BuildCallStackDelegate? BuildCallStackHandler { get; set; }
+
+        /// <summary>
         ///
         /// </summary>
         public MemberAccessorDelegate MemberAccessor { get; set; } = static (engine, target, member) => null;
@@ -333,13 +361,13 @@ public class Options
         /// <summary>
         /// Strategy to create a CLR object to hold converted <see cref="ObjectInstance"/>.
         /// </summary>
-        public Func<ObjectInstance, IDictionary<string, object?>>? CreateClrObject = _ => new ExpandoObject();
+        public Func<ObjectInstance, IDictionary<string, object?>>? CreateClrObject { get; set; } = _ => new ExpandoObject();
 
         /// <summary>
         /// Strategy to create a CLR object from TypeReference.
         /// Defaults to retuning null which makes TypeReference attempt to find suitable constructor.
         /// </summary>
-        public Func<Engine, Type, JsValue[], object?> CreateTypeReferenceObject = (_, _, _) => null;
+        public Func<Engine, Type, JsValue[], object?> CreateTypeReferenceObject { get; set; } = (_, _, _) => null;
 
         internal static readonly ExceptionHandlerDelegate _defaultExceptionHandler = static exception => false;
 
@@ -347,7 +375,7 @@ public class Options
         /// When not null, is used to serialize any CLR object in an
         /// <see cref="IObjectWrapper"/> passing through 'JSON.stringify'.
         /// </summary>
-        public Func<object, string>? SerializeToJson { get; set; }
+        public SerializeToJsonDelegate? SerializeToJson { get; set; }
 
         /// <summary>
         /// What kind of date time should be produced when JavaScript date is converted to DateTime. If Local, uses <see cref="Options.TimeZone"/>.
@@ -373,11 +401,19 @@ public class Options
         public MemberTypes ObjectWrapperReportedMemberTypes { get; set; } = MemberTypes.Field | MemberTypes.Property | MemberTypes.Method;
 
         /// <summary>
-        /// Whether object wrapper should only report members that are declared on the object type itself, not inherited members. Defaults to false.
-        /// This is different from JS logic where only object's own members are reported and not prototypes.
+        /// Reported member binding flags when reflecting, defaults to <see cref="BindingFlags.Instance" /> | <see cref="BindingFlags.Public" />.
         /// </summary>
-        /// <remarks>This configuration does not affect methods, only methods declared in type itself will be reported.</remarks>
-        public bool ObjectWrapperReportOnlyDeclaredMembers { get; set; }
+        public BindingFlags ObjectWrapperReportedFieldBindingFlags { get; set; } = BindingFlags.Instance | BindingFlags.Public;
+
+        /// <summary>
+        /// Reported member binding flags when reflecting, defaults to <see cref="BindingFlags.Instance" /> | <see cref="BindingFlags.Public" />.
+        /// </summary>
+        public BindingFlags ObjectWrapperReportedPropertyBindingFlags { get; set; } = BindingFlags.Instance | BindingFlags.Public;
+
+        /// <summary>
+        /// Reported member binding flags when reflecting, defaults to <see cref="BindingFlags.Instance" /> | <see cref="BindingFlags.Public" /> | <see cref="BindingFlags.Static" />.
+        /// </summary>
+        public BindingFlags ObjectWrapperReportedMethodBindingFlags { get; set; } = BindingFlags.Instance | BindingFlags.Public | BindingFlags.Static;
     }
 
     public class ConstraintOptions
@@ -408,9 +444,20 @@ public class Options
         public TimeSpan RegexTimeout { get; set; } = TimeSpan.FromSeconds(10);
 
         /// <summary>
+        /// Maximum time allowed for unwrapping a Promise and getting its resolved/rejected value.
+        /// Defaults to 10 seconds.
+        /// </summary>
+        public TimeSpan PromiseTimeout { get; set; } = TimeSpan.FromSeconds(10);
+
+        /// <summary>
         /// The maximum size for JavaScript array, defaults to <see cref="uint.MaxValue"/>.
         /// </summary>
         public uint MaxArraySize { get; set; } = uint.MaxValue;
+
+        /// <summary>
+        /// How many iterations is Atomics.pause allowed to instruct to wait using <see cref="System.Threading.Thread.SpinWait"/>, defaults to 10 000.
+        /// </summary>
+        public int MaxAtomicsPauseIterations { get; set; } = 10_000;
     }
 
     /// <summary>
@@ -419,6 +466,21 @@ public class Options
     public class HostOptions
     {
         internal Func<Engine, Host> Factory { get; set; } = _ => new Host();
+
+        /// <summary>
+        /// Whether calling 'eval' with custom code and function constructors taking function code as string is allowed.
+        /// Defaults to true.
+        /// </summary>
+        /// <remarks>
+        /// https://tc39.es/ecma262/#sec-hostensurecancompilestrings
+        /// </remarks>
+        public bool StringCompilationAllowed { get; set; } = true;
+
+        /// <summary>
+        /// Possibility to override Jint's default function() { [native code] } format for functions using AST Node.
+        /// If callback return null, Jint will use its own default logic.
+        /// </summary>
+        public Func<Function, Node, string?> FunctionToStringHandler { get; set; } = (_, _) => null;
     }
 
     /// <summary>
@@ -447,6 +509,38 @@ public class Options
         /// defaults to 64.
         /// </summary>
         public int MaxParseDepth { get; set; } = 64;
+    }
+
+    /// <summary>
+    /// Internationalization (Intl) API related customization.
+    /// </summary>
+    public class IntlOptions
+    {
+        /// <summary>
+        /// CLDR provider for locale data. Defaults to DefaultCldrProvider
+        /// which provides basic English (en-US, en-GB) support.
+        /// </summary>
+        /// <remarks>
+        /// Set this to a custom ICldrProvider implementation (e.g., ICU-based provider)
+        /// to enable full locale support for the Intl API.
+        /// </remarks>
+        public ICldrProvider CldrProvider { get; set; } = DefaultCldrProvider.Instance;
+    }
+
+    /// <summary>
+    /// Temporal API related customization.
+    /// </summary>
+    public class TemporalOptions
+    {
+        /// <summary>
+        /// Time zone provider for Temporal operations. Defaults to DefaultTimeZoneProvider
+        /// which uses .NET TimeZoneInfo for basic IANA time zone support.
+        /// </summary>
+        /// <remarks>
+        /// Set this to a custom ITimeZoneProvider implementation (e.g., using TimeZoneConverter or NodaTime)
+        /// for full IANA time zone support and better Windows compatibility.
+        /// </remarks>
+        public ITimeZoneProvider TimeZoneProvider { get; set; } = DefaultTimeZoneProvider.Instance;
     }
 }
 
@@ -497,6 +591,7 @@ public enum ExperimentalFeature
     /// <summary>
     /// Generator support
     /// </summary>
+    [Obsolete("This flag is no longer necessary as generators are fully supported.")]
     Generators = 1,
 
     /// <summary>
@@ -507,5 +602,5 @@ public enum ExperimentalFeature
     /// <summary>
     /// All coercion rules enabled.
     /// </summary>
-    All = Generators | TaskInterop
+    All = TaskInterop,
 }

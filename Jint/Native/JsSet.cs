@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Diagnostics.CodeAnalysis;
 using Jint.Native.Object;
 using Jint.Runtime;
@@ -5,15 +6,15 @@ using Jint.Runtime.Descriptors;
 
 namespace Jint.Native;
 
-internal sealed class JsSet : ObjectInstance
+public sealed class JsSet : ObjectInstance, IEnumerable<JsValue>
 {
     internal readonly OrderedSet<JsValue> _set;
 
-    public JsSet(Engine engine) : this(engine, new OrderedSet<JsValue>(SameValueZeroComparer.Instance))
+    internal JsSet(Engine engine) : this(engine, new OrderedSet<JsValue>(SameValueZeroComparer.Instance))
     {
     }
 
-    public JsSet(Engine engine, OrderedSet<JsValue> set) : base(engine)
+    internal JsSet(Engine engine, OrderedSet<JsValue> set) : base(engine)
     {
         _set = set;
         _prototype = _engine.Realm.Intrinsics.Set.PrototypeObject;
@@ -21,7 +22,7 @@ internal sealed class JsSet : ObjectInstance
 
     public int Size => _set.Count;
 
-    public JsValue? this[int index]
+    internal JsValue? this[int index]
     {
         get { return index < _set._list.Count ? _set._list[index] : null; }
     }
@@ -47,15 +48,13 @@ internal sealed class JsSet : ObjectInstance
         return base.TryGetProperty(property, out descriptor);
     }
 
-    internal void Add(JsValue value) => _set.Add(value);
+    public void Add(JsValue value) => _set.Add(value);
 
-    internal void Remove(JsValue value) => _set.Remove(value);
+    public void Clear() => _set.Clear();
 
-    internal void Clear() => _set.Clear();
+    public bool Has(JsValue key) => _set.Contains(key);
 
-    internal bool Has(JsValue key) => _set.Contains(key);
-
-    internal bool SetDelete(JsValue key) => _set.Remove(key);
+    public new bool Delete(JsValue key) => _set.Remove(key);
 
     internal void ForEach(ICallable callable, JsValue thisArg)
     {
@@ -76,4 +75,8 @@ internal sealed class JsSet : ObjectInstance
     internal ObjectInstance Entries() => _engine.Realm.Intrinsics.SetIteratorPrototype.ConstructEntryIterator(this);
 
     internal ObjectInstance Values() => _engine.Realm.Intrinsics.SetIteratorPrototype.ConstructValueIterator(this);
+
+    public IEnumerator<JsValue> GetEnumerator() => _set.GetEnumerator();
+
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 }

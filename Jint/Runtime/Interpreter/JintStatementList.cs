@@ -1,8 +1,9 @@
-﻿using System.Runtime.CompilerServices;
+using System.Runtime.CompilerServices;
+using Jint.Collections;
 using Jint.Native;
 using Jint.Native.Error;
+using Jint.Runtime.Environments;
 using Jint.Runtime.Interpreter.Statements;
-using Environment = Jint.Runtime.Environments.Environment;
 
 namespace Jint.Runtime.Interpreter;
 
@@ -16,12 +17,9 @@ internal sealed class JintStatementList
     private Pair[]? _jintStatements;
     private bool _initialized;
     private uint _index;
-    private readonly bool _generator;
 
-    public JintStatementList(IFunction function)
-        : this((FunctionBody) function.Body)
+    public JintStatementList(IFunction function) : this((FunctionBody) function.Body)
     {
-        _generator = function.Generator;
     }
 
     public JintStatementList(BlockStatement blockStatement)
@@ -98,14 +96,25 @@ internal sealed class JintStatementList
                     c = new Completion(CompletionType.Return, pair.Value, pair.Statement._statement);
                 }
 
-                if (_generator)
+                // Check for suspension (generator yield or async await)
+                var suspendable = context.Engine.ExecutionContext.Suspendable;
+                if (context.IsSuspended())
                 {
-                    if (context.Engine.ExecutionContext.Suspended)
-                    {
-                        _index = i + 1;
-                        c = new Completion(CompletionType.Return, c.Value, pair.Statement._statement);
-                        break;
-                    }
+                    // Save position for resume - we'll re-execute this statement on resume
+                    // The yield/await tracking handles knowing which suspension point to resume from
+                    _index = i;
+                    // Use the suspended value, as the statement's completion value
+                    // might be different (e.g., variable declarations return Empty, not the yielded value)
+                    var suspendedValue = suspendable?.SuspendedValue ?? c.Value;
+                    return new Completion(CompletionType.Return, suspendedValue, pair.Statement._statement);
+                }
+
+                // Check for return request (from generator.return() call)
+                if (suspendable?.ReturnRequested == true)
+                {
+                    Reset();
+                    var returnValue = suspendable.SuspendedValue ?? c.Value;
+                    return new Completion(CompletionType.Return, returnValue, pair.Statement._statement);
                 }
 
                 if (c.Type != CompletionType.Normal)
@@ -118,6 +127,17 @@ internal sealed class JintStatementList
                 {
                     lastValue = c.Value;
                 }
+            }
+
+            // Reset index after normal loop completion for potential re-execution
+            // (e.g., this block is a for-of body that will execute again on next iteration)
+            // But don't reset for async function/module bodies - if pending promise reactions
+            // call AsyncFunctionResume after completion, we shouldn't re-execute from start.
+            // Async bodies should complete exactly once.
+            var currentAsyncFn = context.Engine.ExecutionContext.AsyncFunction;
+            if (currentAsyncFn?._body != this)
+            {
+                _index = 0;
             }
         }
         catch (Exception ex)
@@ -134,7 +154,15 @@ internal sealed class JintStatementList
             }
         }
 
-        return c.UpdateEmpty(lastValue).UpdateEmpty(JsValue.Undefined);
+        // Only apply the final UpdateEmpty(Undefined) at program/script level or function body level.
+        // Nested block statements should return empty completion to not override the previous statement's value.
+        // _statement is null for Program/Script, or is a FunctionBody for function bodies.
+        var result = c.UpdateEmpty(lastValue);
+        if (_statement is null or FunctionBody)
+        {
+            result = result.UpdateEmpty(JsValue.Undefined);
+        }
+        return result;
     }
 
     internal static Completion HandleException(EvaluationContext context, Exception exception, JintStatement? s)
@@ -181,36 +209,39 @@ internal sealed class JintStatementList
     /// <summary>
     /// https://tc39.es/ecma262/#sec-blockdeclarationinstantiation
     /// </summary>
-    internal static void BlockDeclarationInstantiation(Environment env, List<Declaration> declarations)
+    internal static void BlockDeclarationInstantiation(DeclarativeEnvironment env, DeclarationCache declarations)
     {
         var privateEnv = env._engine.ExecutionContext.PrivateEnvironment;
-        var boundNames = new List<Key>();
-        for (var i = 0; i < declarations.Count; i++)
+
+        var list = declarations.Declarations;
+        var dictionary = env._dictionary ??= new HybridDictionary<Binding>(list.Count, checkExistingKeys: !declarations.AllLexicalScoped);
+        dictionary.EnsureCapacity(list.Count);
+
+        for (var i = 0; i < list.Count; i++)
         {
-            var d = declarations[i];
-            boundNames.Clear();
-            d.GetBoundNames(boundNames);
-            for (var j = 0; j < boundNames.Count; j++)
+            var declaration = list[i];
+            foreach (var bn in declaration.BoundNames)
             {
-                var dn = boundNames[j];
-                if (d is VariableDeclaration { Kind: VariableDeclarationKind.Const })
+                if (declaration.IsConstantDeclaration)
                 {
-                    env.CreateImmutableBinding(dn, strict: true);
+                    dictionary.CreateImmutableBinding(bn, strict: true);
                 }
                 else
                 {
-                    env.CreateMutableBinding(dn, canBeDeleted: false);
+                    dictionary.CreateMutableBinding(bn, canBeDeleted: false);
                 }
             }
 
-            if (d is FunctionDeclaration functionDeclaration)
+            if (declaration.Declaration is FunctionDeclaration functionDeclaration)
             {
                 var definition = new JintFunctionDefinition(functionDeclaration);
                 var fn = definition.Name!;
                 var fo = env._engine.Realm.Intrinsics.Function.InstantiateFunctionObject(definition, env, privateEnv);
-                env.InitializeBinding(fn, fo);
+                env.InitializeBinding(fn, fo, DisposeHint.Normal);
             }
         }
+
+        dictionary.CheckExistingKeys = true;
     }
 
     public bool Completed => _index == _jintStatements?.Length;

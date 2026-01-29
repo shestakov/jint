@@ -1,16 +1,16 @@
-﻿using System.Diagnostics;
-using System.Runtime.CompilerServices;
+﻿using System.Runtime.CompilerServices;
 
 namespace Jint.Extensions;
 
 internal static class Character
 {
+    /// <summary>
+    /// https://tc39.es/ecma262/#ASCII-word-characters
+    /// </summary>
+    public const string AsciiWordCharacters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_";
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static bool IsInRange(this char c, ushort min, ushort max)
-    {
-        Debug.Assert(min <= max);
-        return c - (uint) min <= max - (uint) min;
-    }
+    public static bool IsInRange(this char c, ushort min, ushort max) => (uint) (c - min) <= (uint) (max - min);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool IsOctalDigit(this char c) => c.IsInRange('0', '7');

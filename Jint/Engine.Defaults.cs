@@ -7,7 +7,10 @@ public partial class Engine
     internal static readonly ParserOptions BaseParserOptions = ParserOptions.Default with
     {
         EcmaVersion = EcmaVersion.ES2023,
-        ExperimentalESFeatures = ExperimentalESFeatures.ImportAttributes | ExperimentalESFeatures.RegExpDuplicateNamedCapturingGroups,
+        ExperimentalESFeatures = ExperimentalESFeatures.ImportAttributes
+                                 | ExperimentalESFeatures.RegExpDuplicateNamedCapturingGroups
+                                 | ExperimentalESFeatures.ExplicitResourceManagement
+                                 | ExperimentalESFeatures.Decorators,
         Tolerant = false,
     };
 }

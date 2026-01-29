@@ -1,4 +1,3 @@
-using Jint.Collections;
 using Jint.Native.ArrayBuffer;
 using Jint.Native.Iterator;
 using Jint.Native.Object;
@@ -48,7 +47,7 @@ internal sealed class ArrayIteratorPrototype : IteratorPrototype
         }
 
         IteratorInstance instance = array is JsArray jsArray
-            ? new ArrayIterator(Engine, jsArray, kind)  { _prototype = this }
+            ? new ArrayIterator(Engine, jsArray, kind) { _prototype = this }
             : new ArrayLikeIterator(Engine, array, kind) { _prototype = this };
 
         return instance;
@@ -124,7 +123,7 @@ internal sealed class ArrayIteratorPrototype : IteratorPrototype
                 var taRecord = IntrinsicTypedArrayPrototype.MakeTypedArrayWithBufferWitnessRecord(_typedArray, ArrayBufferOrder.SeqCst);
                 if (!_closed && taRecord.IsTypedArrayOutOfBounds)
                 {
-                    ExceptionHelper.ThrowTypeError(_typedArray.Engine.Realm, "TypedArray is out of bounds");
+                    Throw.TypeError(_typedArray.Engine.Realm, "TypedArray is out of bounds");
                 }
                 len = taRecord.TypedArrayLength;
             }

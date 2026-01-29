@@ -1,6 +1,4 @@
 using Jint.Native;
-using Jint.Native.Symbol;
-using Jint.Runtime.Descriptors;
 using Jint.Runtime.Interop;
 using Jint.Tests.Runtime.Domain;
 using Microsoft.Extensions.DependencyInjection;
@@ -184,22 +182,18 @@ public partial class InteropTests
     }
 
     [Fact]
-    public void CanRegisterToStringTag()
+    public void ToStringTagShouldReflectType()
     {
         var reference = TypeReference.CreateTypeReference<Dependency>(_engine);
-        reference.FastSetProperty(GlobalSymbolRegistry.ToStringTag, new PropertyDescriptor(nameof(Dependency), false, false, true));
-        reference.FastSetDataProperty("abc", 123);
 
         _engine.SetValue("MyClass", reference);
         _engine.Execute("var c = new MyClass();");
 
         Assert.Equal("[object Dependency]", _engine.Evaluate("Object.prototype.toString.call(c);"));
-        Assert.Equal(123, _engine.Evaluate("c.abc"));
 
         // engine uses registered type reference
         _engine.SetValue("c2", new Dependency());
         Assert.Equal("[object Dependency]", _engine.Evaluate("Object.prototype.toString.call(c2);"));
-        Assert.Equal(123, _engine.Evaluate("c2.abc"));
     }
 
     private class Injectable

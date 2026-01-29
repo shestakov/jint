@@ -4,6 +4,7 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using Jint.Native;
 using Jint.Native.Function;
+using Jint.Native.Number;
 using Jint.Runtime;
 using Jint.Runtime.Interop;
 using Jint.Tests.Runtime.Converters;
@@ -57,7 +58,7 @@ public partial class InteropTests : IDisposable
     [Fact]
     public void ShouldStringifyNetObjects()
     {
-        _engine.SetValue("foo", new Foo());
+        _engine.SetValue("foo", typeof(Foo));
         var json = _engine.Evaluate("JSON.stringify(foo.GetBar())").AsString();
         Assert.Equal("{\"Test\":\"123\"}", json);
     }
@@ -262,6 +263,70 @@ public partial class InteropTests : IDisposable
         RunTest(@"
                 assert(passNumber(123,'test',{},[],null) === 123);
             ");
+    }
+
+    class Example()
+    {
+        public T ExchangeGenericViaFunc<T>(Func<T> objViaFunc)
+        {
+            return objViaFunc();
+        }
+
+        public object ExchangeObjectViaFunc(Func<object> objViaFunc)
+        {
+            return objViaFunc();
+        }
+
+        public int ExchangeValueViaFunc(Func<int> objViaFunc)
+        {
+            return objViaFunc();
+        }
+    }
+
+    [Fact]
+    public void ExchangeGenericViaFunc()
+    {
+        _engine.SetValue("Example", new Example());
+
+        RunTest(@"
+            const result = Example.ExchangeGenericViaFunc(() => {
+                return {
+                    value: 42
+                };
+            });
+
+            assert(result.value === 42);
+        ");
+    }
+
+    [Fact]
+    public void ExchangeObjectViaFunc()
+    {
+        _engine.SetValue("Example", new Example());
+
+        RunTest(@"
+            const result = Example.ExchangeObjectViaFunc(() => {
+                return {
+                    value: 42
+                };
+            });
+
+            assert(result.value === 42);
+        ");
+    }
+
+    [Fact]
+    public void ExchangeValueViaFunc()
+    {
+        _engine.SetValue("Example", new Example());
+
+        RunTest(@"
+            const result = Example.ExchangeValueViaFunc(() => {
+                return 42;
+            });
+
+            assert(result === 42);
+        ");
     }
 
     private delegate string callParams(params object[] values);
@@ -2750,7 +2815,7 @@ public partial class InteropTests : IDisposable
         var result = engine.GetValue("f");
         Assert.True(result.IsCallable);
 
-        Assert.True(result.Call(Array.Empty<JsValue>()).AsBoolean());
+        Assert.True(result.Call([]).AsBoolean());
         Assert.True(result.Call().AsBoolean());
     }
 
@@ -2783,20 +2848,32 @@ public partial class InteropTests : IDisposable
             options.SetTypeResolver(customTypeResolver);
             options.AddExtensionMethods(typeof(CustomNamedExtensions));
         });
+
         engine.SetValue("o", new CustomNamed());
         Assert.Equal("StringField", engine.Evaluate("o.jsStringField").AsString());
         Assert.Equal("StringField", engine.Evaluate("o.jsStringField2").AsString());
-        Assert.Equal("StaticStringField", engine.Evaluate("o.jsStaticStringField").AsString());
         Assert.Equal("StringProperty", engine.Evaluate("o.jsStringProperty").AsString());
         Assert.Equal("Method", engine.Evaluate("o.jsMethod()").AsString());
-        Assert.Equal("StaticMethod", engine.Evaluate("o.jsStaticMethod()").AsString());
         Assert.Equal("InterfaceStringProperty", engine.Evaluate("o.jsInterfaceStringProperty").AsString());
         Assert.Equal("InterfaceMethod", engine.Evaluate("o.jsInterfaceMethod()").AsString());
         Assert.Equal("ExtensionMethod", engine.Evaluate("o.jsExtensionMethod()").AsString());
 
+        // static methods are reported by default, unlike properties and fields
+        Assert.Equal("StaticMethod", engine.Evaluate("o.jsStaticMethod()").AsString());
+
+        engine.SetValue("CustomNamed", typeof(CustomNamed));
+        Assert.Equal("StaticStringField", engine.Evaluate("CustomNamed.jsStaticStringField").AsString());
+        Assert.Equal("StaticMethod", engine.Evaluate("CustomNamed.jsStaticMethod()").AsString());
+
         engine.SetValue("XmlHttpRequest", typeof(CustomNamedEnum));
         engine.Evaluate("o.jsEnumProperty = XmlHttpRequest.HEADERS_RECEIVED;");
         Assert.Equal((int) CustomNamedEnum.HeadersReceived, engine.Evaluate("o.jsEnumProperty").AsNumber());
+
+        // can get static members with different configuration
+        var engineWithStaticsReported = new Engine(options => options.Interop.ObjectWrapperReportedFieldBindingFlags |= BindingFlags.Static);
+        engineWithStaticsReported.SetValue("o", new CustomNamed());
+        Assert.Equal("StaticMethod", engineWithStaticsReported.Evaluate("o.staticMethod()").AsString());
+        Assert.Equal("StaticStringField", engineWithStaticsReported.Evaluate("o.staticStringField").AsString());
     }
 
     [Fact]
@@ -2914,7 +2991,7 @@ public partial class InteropTests : IDisposable
     {
         var engine = new Jint.Engine();
         var list = new List<string> { "A", "B", "C" };
- 
+
         engine.SetValue("list", list);
 
         Assert.Equal(1, engine.Evaluate("list.findIndex((x) => x === 'B')"));
@@ -3299,9 +3376,13 @@ try {
         public BaseClass Get() => _child;
     }
 
-    private class BaseClass { }
+    private class BaseClass
+    {
+    }
 
-    private class Child : BaseClass { }
+    private class Child : BaseClass
+    {
+    }
 
     [Fact]
     public void AccessingBaseTypeShouldBeEqualToAccessingDerivedType()
@@ -3330,6 +3411,7 @@ try {
     public class Strings : IStringCollection
     {
         private readonly string[] _strings;
+
         public Strings(string[] strings)
         {
             _strings = strings;
@@ -3342,7 +3424,7 @@ try {
 
     public class Utils
     {
-        public IStringCollection GetStrings() => new Strings(new [] { "a", "b", "c" });
+        public IStringCollection GetStrings() => new Strings(["a", "b", "c"]);
     }
 
     [Fact]
@@ -3386,6 +3468,7 @@ try {
         public bool ContainsKey(string key) => throw new NotImplementedException();
         public void Add(string key, object value) => throw new NotImplementedException();
         public bool Remove(string key) => throw new NotImplementedException();
+
         public bool TryGetValue(string key, out object value)
         {
             value = "from-wrapper";
@@ -3469,6 +3552,7 @@ try {
         });
 
         var result = new List<string>();
+
         void Debug(object o)
         {
             result.Add($"{o?.GetType().Name ?? "null"}: {o ?? "null"}");
@@ -3489,73 +3573,97 @@ try {
 
     private class ClrMembersVisibilityTestClass
     {
-        public int A { get; set; } = 10;
+        public string Field = "field";
 
-        public int F()
+        public int Property { get; set; } = 10;
+
+        public int Method()
         {
             return 4;
         }
+
+        public string Extras { get; set; }
     }
 
     [Fact]
-    public void ShouldNotSeeClrMethods()
+    public void PropertiesShouldNotSeeReportMethodsWhenMemberTypesActive()
     {
         var engine = new Engine(opt =>
         {
             opt.Interop.ObjectWrapperReportedMemberTypes = MemberTypes.Field | MemberTypes.Property;
         });
-        
-        engine.SetValue("clrInstance", new ClrMembersVisibilityTestClass());
-        
-         var val = engine.GetValue("clrInstance");
 
-         var obj = val.AsObject();
-         var props = obj.GetOwnProperties().Select(x => x.Key.ToString()).ToList();
-         
-         props.Should().BeEquivalentTo(["A"]);
+        engine.SetValue("clrInstance", new ClrMembersVisibilityTestClass());
+
+        var val = engine.GetValue("clrInstance");
+
+        var obj = val.AsObject();
+        var props = obj.GetOwnProperties().Select(x => x.Key.ToString()).ToList();
+
+        props.Should().BeEquivalentTo("Property", "Extras", "Field");
     }
-    
+
     [Fact]
-    public void ShouldSeeClrMethods()
+    public void PropertyKeysShouldReportMethods()
     {
         var engine = new Engine();
-        
+
         engine.SetValue("clrInstance", new ClrMembersVisibilityTestClass());
-        
+
         var val = engine.GetValue("clrInstance");
         var obj = val.AsObject();
         var props = obj.GetOwnProperties().Select(x => x.Key.ToString()).ToList();
 
-        props.Should().BeEquivalentTo(["A", "F"]);
+        props.Should().BeEquivalentTo("Property", "Extras", "Field", "Method");
     }
-    
+
+    [Fact]
+    public void PropertyKeysShouldObeyMemberFilter()
+    {
+        var engine = new Engine(options =>
+        {
+            options.SetTypeResolver(new TypeResolver
+            {
+                MemberFilter = member => member.Name == "Extras"
+            });
+        });
+
+        engine.SetValue("clrInstance", new ClrMembersVisibilityTestClass());
+
+        var val = engine.GetValue("clrInstance");
+        var obj = val.AsObject();
+        var props = obj.GetOwnProperties().Select(x => x.Key.ToString()).ToList();
+
+        props.Should().BeEquivalentTo("Extras");
+    }
+
     private class ClrMembersVisibilityTestClass2
     {
         public int Get_A { get; set; } = 5;
     }
-    
+
     [Fact]
     public void ShouldSeeClrMethods2()
     {
         var engine = new Engine();
-        
+
         engine.SetValue("clrInstance", new ClrMembersVisibilityTestClass2());
-        
+
         var val = engine.GetValue("clrInstance");
 
         var obj = val.AsObject();
         var props = obj.GetOwnProperties().Select(x => x.Key.ToString()).ToList();
-         
-        props.Should().BeEquivalentTo(["Get_A"]);
+
+        props.Should().BeEquivalentTo("Get_A");
     }
-    
+
     [Fact]
     public void ShouldNotThrowOnInspectingClrFunction()
     {
         var engine = new Engine();
-        
+
         engine.SetValue("clrDelegate", () => 4);
-        
+
         var val = engine.GetValue("clrDelegate");
 
         var fn = val as Function;
@@ -3563,7 +3671,7 @@ try {
 
         decl.Should().BeNull();
     }
-    
+
     private class ShouldNotThrowOnInspectingClrFunctionTestClass
     {
         public int MyInt()
@@ -3571,20 +3679,20 @@ try {
             return 4;
         }
     }
-    
+
     [Fact]
     public void ShouldNotThrowOnInspectingClrClassFunction()
     {
         var engine = new Engine();
-        
+
         engine.SetValue("clrCls", new ShouldNotThrowOnInspectingClrFunctionTestClass());
-        
+
         var val = engine.GetValue("clrCls");
         var clrFn = val.Get("MyInt");
-        
+
         var fn = clrFn as Function;
         var decl = fn!.FunctionDeclaration;
-        
+
         decl.Should().BeNull();
     }
 
@@ -3594,13 +3702,259 @@ try {
         var engine = new Engine();
         engine.SetValue("c", new Circle(12.34));
         engine.Evaluate("JSON.stringify(c)").ToString().Should().Be("{\"Radius\":12.34,\"Color\":0,\"Id\":123}");
+    }
 
+    public class Animal
+    {
+        public virtual string name { get; set; } = "animal";
+    }
 
-        engine = new Engine(options =>
+    public class Elephant : Animal
+    {
+        public override string name { get; set; } = "elephant";
+        public int earSize = 5;
+    }
+
+    public class Lion : Animal
+    {
+        public override string name { get; set; } = "lion";
+        public int maneLength = 10;
+    }
+
+    public class Zoo
+    {
+        public Animal king { get => (new Animal[] { new Lion() })[0]; }
+        public Animal[] animals { get => [new Lion(), new Elephant()]; }
+    }
+
+    [Fact]
+    public void CanFindDerivedPropertiesFail() // Fails in 4.01 but success in 2.11
+    {
+        var engine = new Engine();
+        engine.SetValue("zoo", new Zoo());
+        var kingManeLength = engine.Evaluate("zoo.King.maneLength");
+        Assert.Equal(10, kingManeLength.AsNumber());
+    }
+
+    [Fact]
+    public void CanFindDerivedPropertiesSucceed() // Similar case that continues to succeed
+    {
+        var engine = new Engine();
+        engine.SetValue("zoo", new Zoo());
+        var lionManeLength = engine.Evaluate("zoo.animals[0].maneLength");
+        Assert.Equal(10, lionManeLength.AsNumber());
+    }
+
+    [Fact]
+    public void StaticFieldsShouldFollowJsSemantics()
+    {
+        _engine.Evaluate("Number.MAX_SAFE_INTEGER").AsNumber().Should().Be(NumberConstructor.MaxSafeInteger);
+        _engine.Evaluate("new Number().MAX_SAFE_INTEGER").Should().Be(JsValue.Undefined);
+
+        _engine.Execute("class MyJsClass { static MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER; }");
+        _engine.Evaluate("MyJsClass.MAX_SAFE_INTEGER").AsNumber().Should().Be(NumberConstructor.MaxSafeInteger);
+        _engine.Evaluate("new MyJsClass().MAX_SAFE_INTEGER").Should().Be(JsValue.Undefined);
+
+        _engine.SetValue("MyCsClass", typeof(MyClass));
+        _engine.Evaluate("MyCsClass.MAX_SAFE_INTEGER").AsNumber().Should().Be(NumberConstructor.MaxSafeInteger);
+        _engine.Evaluate("new MyCsClass().MAX_SAFE_INTEGER").Should().Be(JsValue.Undefined);
+    }
+
+    private class MyClass
+    {
+        public static JsNumber MAX_SAFE_INTEGER = new JsNumber(NumberConstructor.MaxSafeInteger);
+    }
+
+    [Fact]
+    public void ShouldFindShortOverload()
+    {
+        _engine.SetValue("target", new ShortOverloadWithBoolean());
+        _engine.Evaluate("target.method(42)").AsString().Should().Be("short");
+    }
+
+    private class ShortOverloadWithBoolean
+    {
+        public string Method(short s, bool b = true)
         {
-            options.Interop.ObjectWrapperReportOnlyDeclaredMembers = true;
-        });
-        engine.SetValue("c", new Circle(12.34));
-        engine.Evaluate("JSON.stringify(c)").ToString().Should().Be("{\"Radius\":12.34}");
+            return "short";
+        }
+
+        public string Method(bool b)
+        {
+            return "boolean";
+        }
+    }
+
+    [Fact]
+    public void MultipleInteropCallsShouldNotCacheFunctionEnvironment()
+    {
+        var engine = new Engine();
+        engine.Evaluate(
+            """
+            function findIt(array, kind) {           
+                let found = array.find(function sub(x) {
+                    return x.kind == kind;
+                });
+                return found;
+            };
+            """);
+        var findIt = (ScriptFunction) engine.GetValue("findIt");
+        var interop = (Func<JsValue, JsValue[], JsValue>) findIt.ToObject()!;
+
+        var values = new List<object>
+        {
+            new { kind = 'a' },
+            new { kind = 'b' }
+        };
+
+        var found1 = interop(
+            JsValue.Undefined,
+            [
+                JsValue.FromObject(engine, values),
+                JsValue.FromObject(engine, "a")
+            ])
+            .ToObject();
+
+        var found2 = interop(
+            JsValue.Undefined,
+            [
+                JsValue.FromObject(engine, values),
+                JsValue.FromObject(engine, "b")
+            ])
+            .ToObject();
+
+        Assert.Equal(values[0], found1);
+        Assert.Equal(values[1], found2);
+    }
+
+    [Fact]
+    public void CanCallBoundJavascriptFunctionFromDotnet()
+    {
+        var ticker = new Ticker();
+        _engine.SetValue("ticker", ticker);
+
+        var counter = (double) _engine.Evaluate("""
+            function tickHandler() {
+                counter++;
+            }
+
+            let counter = 0;
+            const dummyThisObject = {};
+
+            // bind javascript function to new this-object
+            const tickerHandlerBinding = tickHandler.bind(dummyThisObject);
+            
+            // register it with .NET
+            ticker.add_Ticked(tickerHandlerBinding);
+            ticker.Tick();
+
+            // unregister it
+            ticker.remove_Ticked(tickerHandlerBinding);
+            ticker.Tick();
+
+            // return counter as result
+            counter;
+            """).ToObject();
+
+        ticker.Tick();
+        counter.Should().Be(1);
+    }
+
+    internal class Ticker
+    {
+        public event EventHandler Ticked;
+
+        public void Tick()
+        {
+            Ticked?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    [Fact]
+    public void ShouldBeAbleToWriteLengthOfListLike()
+    {
+        var list = new List<string> { "a", "b", "c" };
+        _engine.SetValue("list", list);
+
+        _engine.Evaluate("list.length = 2;");
+        list.Should().HaveCount(2);
+        list[0].Should().Be("a");
+        list[1].Should().Be("b");
+
+        _engine.Evaluate("list.length = 0;");
+        list.Should().BeEmpty();
+
+        var act = () => _engine.Evaluate("list.length = -1;");
+        act.Should().Throw<JavaScriptException>().WithMessage("Invalid array length");
+
+        _engine.Evaluate("list.length = 1;");
+        list.Should().HaveCount(1);
+        list[0].Should().Be(null);
+    }
+
+    // GitHub issue #2173 - Type resolution should use runtime type when declared type has indexer
+    private class WrapperWithIndexer
+    {
+        private readonly Dictionary<string, object> _properties = new();
+
+        public object this[string key]
+        {
+            get => _properties.TryGetValue(key, out var value) ? value : null!;
+            set => _properties[key] = value;
+        }
+    }
+
+    private class GeometryWrapperWithProperty : WrapperWithIndexer
+    {
+        public double X { get; set; }
+        public double Y { get; set; }
+    }
+
+    private class FeatureWithBaseTypeProperty
+    {
+        public WrapperWithIndexer Geometry { get; set; } = new GeometryWrapperWithProperty { X = 10.5, Y = 20.5 };
+    }
+
+    [Fact]
+    public void ShouldAccessDerivedTypePropertyWhenDeclaredTypeHasIndexer()
+    {
+        // GitHub issue #2173: When a property is declared with a base type that has an indexer,
+        // but the actual runtime value is a derived type with a property, the property should be accessible
+        var engine = new Engine();
+        var feature = new FeatureWithBaseTypeProperty();
+        engine.SetValue("feature", feature);
+
+        // Should access the X property from GeometryWrapperWithProperty, not the indexer from WrapperWithIndexer
+        var result = engine.Evaluate("feature.Geometry.x").AsNumber();
+        Assert.Equal(10.5, result);
+
+        var resultY = engine.Evaluate("feature.Geometry.y").AsNumber();
+        Assert.Equal(20.5, resultY);
+    }
+
+    [Fact]
+    public void ShouldStillAccessIndexerWhenPropertyDoesNotExist()
+    {
+        // Ensure the indexer still works when the property doesn't exist on the derived type
+        var engine = new Engine();
+        var feature = new FeatureWithBaseTypeProperty();
+        ((GeometryWrapperWithProperty) feature.Geometry)["customKey"] = "customValue";
+        engine.SetValue("feature", feature);
+
+        var result = engine.Evaluate("feature.Geometry.customKey");
+        Assert.Equal("customValue", result.AsString());
+    }
+
+    [Fact]
+    public void ShouldSetDerivedTypePropertyWhenDeclaredTypeHasIndexer()
+    {
+        var engine = new Engine(cfg => cfg.AllowClrWrite());
+        var feature = new FeatureWithBaseTypeProperty();
+        engine.SetValue("feature", feature);
+
+        engine.Evaluate("feature.Geometry.x = 99.9");
+
+        var geometry = (GeometryWrapperWithProperty) feature.Geometry;
+        Assert.Equal(99.9, geometry.X);
     }
 }
