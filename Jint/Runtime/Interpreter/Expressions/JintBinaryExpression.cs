@@ -6,7 +6,6 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using Jint.Extensions;
 using Jint.Native;
-using Jint.Native.Number;
 using Jint.Native.Object;
 using Jint.Runtime.Interop;
 
@@ -40,6 +39,28 @@ internal abstract class JintBinaryExpression : JintExpression
         _initialized = true;
     }
 
+    /// <summary>
+    /// Evaluates both operands with proper suspension checks for async/generator functions.
+    /// Returns false if evaluation was suspended (caller should return early).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    protected bool TryEvaluateOperands(EvaluationContext context, out JsValue left, out JsValue right)
+    {
+        EnsureInitialized();
+
+        left = _left.GetValue(context);
+        if (context.IsSuspended())
+        {
+            right = JsValue.Undefined;
+            return false;
+        }
+
+        right = _right.GetValue(context);
+        return !context.IsSuspended();
+    }
+
+    private readonly record struct MethodResolverState(JsCallArguments Arguments);
+
     internal static bool TryOperatorOverloading(
         EvaluationContext context,
         JsValue leftValue,
@@ -65,7 +86,7 @@ internal abstract class JintBinaryExpression : JintExpression
                 var methods = leftMethods.Concat(rightMethods).Where(x => string.Equals(x.Name, clrName, StringComparison.Ordinal) && x.GetParameters().Length == 2);
                 var methodDescriptors = MethodDescriptor.Build(methods.ToArray());
 
-                return InteropHelper.FindBestMatch(context.Engine, methodDescriptors, _ => arguments).FirstOrDefault().Method;
+                return InteropHelper.FindBestMatch(context.Engine, methodDescriptors, static (_, state) => state.Arguments, new MethodResolverState(arguments)).FirstOrDefault().Method;
             });
 
             if (method != null)
@@ -77,7 +98,7 @@ internal abstract class JintBinaryExpression : JintExpression
                 }
                 catch (Exception e)
                 {
-                    ExceptionHelper.ThrowMeaningfulException(context.Engine, new TargetInvocationException(e.InnerException));
+                    Throw.MeaningfulException(context.Engine, new TargetInvocationException(e.InnerException));
                     result = null;
                     return false;
                 }
@@ -150,7 +171,7 @@ internal abstract class JintBinaryExpression : JintExpression
                 result = new InBinaryExpression(expression);
                 break;
             default:
-                ExceptionHelper.ThrowArgumentOutOfRangeException(nameof(expression.Operator), "cannot handle operator");
+                Throw.ArgumentOutOfRangeException(nameof(expression.Operator), "cannot handle operator");
                 break;
         }
 
@@ -190,7 +211,7 @@ internal abstract class JintBinaryExpression : JintExpression
     {
         if (left.Type != right.Type)
         {
-            ExceptionHelper.ThrowTypeErrorNoEngine("Cannot mix BigInt and other types, use explicit conversions");
+            Throw.TypeErrorNoEngine("Cannot mix BigInt and other types, use explicit conversions");
         }
     }
 
@@ -202,10 +223,11 @@ internal abstract class JintBinaryExpression : JintExpression
 
         protected override object EvaluateInternal(EvaluationContext context)
         {
-            EnsureInitialized();
+            if (!TryEvaluateOperands(context, out var left, out var right))
+            {
+                return JsValue.Undefined;
+            }
 
-            var left = _left.GetValue(context);
-            var right = _right.GetValue(context);
             var equal = left == right;
             return equal ? JsBoolean.True : JsBoolean.False;
         }
@@ -219,10 +241,11 @@ internal abstract class JintBinaryExpression : JintExpression
 
         protected override object EvaluateInternal(EvaluationContext context)
         {
-            EnsureInitialized();
+            if (!TryEvaluateOperands(context, out var left, out var right))
+            {
+                return JsValue.Undefined;
+            }
 
-            var left = _left.GetValue(context);
-            var right = _right.GetValue(context);
             return left == right ? JsBoolean.False : JsBoolean.True;
         }
     }
@@ -235,10 +258,10 @@ internal abstract class JintBinaryExpression : JintExpression
 
         protected override object EvaluateInternal(EvaluationContext context)
         {
-            EnsureInitialized();
-
-            var left = _left.GetValue(context);
-            var right = _right.GetValue(context);
+            if (!TryEvaluateOperands(context, out var left, out var right))
+            {
+                return JsValue.Undefined;
+            }
 
             if (context.OperatorOverloadingAllowed
                 && TryOperatorOverloading(context, left, right, "op_LessThan", out var opResult))
@@ -260,10 +283,10 @@ internal abstract class JintBinaryExpression : JintExpression
 
         protected override object EvaluateInternal(EvaluationContext context)
         {
-            EnsureInitialized();
-
-            var left = _left.GetValue(context);
-            var right = _right.GetValue(context);
+            if (!TryEvaluateOperands(context, out var left, out var right))
+            {
+                return JsValue.Undefined;
+            }
 
             if (context.OperatorOverloadingAllowed
                 && TryOperatorOverloading(context, left, right, "op_GreaterThan", out var opResult))
@@ -285,10 +308,10 @@ internal abstract class JintBinaryExpression : JintExpression
 
         protected override object EvaluateInternal(EvaluationContext context)
         {
-            EnsureInitialized();
-
-            var left = _left.GetValue(context);
-            var right = _right.GetValue(context);
+            if (!TryEvaluateOperands(context, out var left, out var right))
+            {
+                return JsValue.Undefined;
+            }
 
             if (context.OperatorOverloadingAllowed
                 && TryOperatorOverloading(context, left, right, "op_Addition", out var opResult))
@@ -298,7 +321,7 @@ internal abstract class JintBinaryExpression : JintExpression
 
             if (AreIntegerOperands(left, right))
             {
-                return JsNumber.Create((long)left.AsInteger() + right.AsInteger());
+                return JsNumber.Create((long) left.AsInteger() + right.AsInteger());
             }
 
             var lprim = TypeConverter.ToPrimitive(left);
@@ -308,7 +331,7 @@ internal abstract class JintBinaryExpression : JintExpression
             {
                 result = JsString.Create(TypeConverter.ToString(lprim) + TypeConverter.ToString(rprim));
             }
-            else if (AreNonBigIntOperands(left,right))
+            else if (AreNonBigIntOperands(left, right))
             {
                 result = JsNumber.Create(TypeConverter.ToNumber(lprim) + TypeConverter.ToNumber(rprim));
             }
@@ -330,10 +353,10 @@ internal abstract class JintBinaryExpression : JintExpression
 
         protected override object EvaluateInternal(EvaluationContext context)
         {
-            EnsureInitialized();
-
-            var left = _left.GetValue(context);
-            var right = _right.GetValue(context);
+            if (!TryEvaluateOperands(context, out var left, out var right))
+            {
+                return JsValue.Undefined;
+            }
 
             if (context.OperatorOverloadingAllowed
                 && TryOperatorOverloading(context, left, right, "op_Subtraction", out var opResult))
@@ -347,7 +370,7 @@ internal abstract class JintBinaryExpression : JintExpression
 
             if (AreIntegerOperands(left, right))
             {
-                number = JsNumber.Create((long)left.AsInteger() - right.AsInteger());
+                number = JsNumber.Create((long) left.AsInteger() - right.AsInteger());
             }
             else if (AreNonBigIntOperands(left, right))
             {
@@ -371,10 +394,10 @@ internal abstract class JintBinaryExpression : JintExpression
 
         protected override object EvaluateInternal(EvaluationContext context)
         {
-            EnsureInitialized();
-
-            var left = _left.GetValue(context);
-            var right = _right.GetValue(context);
+            if (!TryEvaluateOperands(context, out var left, out var right))
+            {
+                return JsValue.Undefined;
+            }
 
             JsValue result;
             if (context.OperatorOverloadingAllowed
@@ -414,10 +437,10 @@ internal abstract class JintBinaryExpression : JintExpression
 
         protected override object EvaluateInternal(EvaluationContext context)
         {
-            EnsureInitialized();
-
-            var left = _left.GetValue(context);
-            var right = _right.GetValue(context);
+            if (!TryEvaluateOperands(context, out var left, out var right))
+            {
+                return JsValue.Undefined;
+            }
 
             if (context.OperatorOverloadingAllowed
                 && TryOperatorOverloading(context, left, right, "op_Division", out var opResult))
@@ -442,10 +465,10 @@ internal abstract class JintBinaryExpression : JintExpression
 
         protected override object EvaluateInternal(EvaluationContext context)
         {
-            EnsureInitialized();
-
-            var left = _left.GetValue(context);
-            var right = _right.GetValue(context);
+            if (!TryEvaluateOperands(context, out var left, out var right))
+            {
+                return JsValue.Undefined;
+            }
 
             if (context.OperatorOverloadingAllowed
                 && TryOperatorOverloading(context, left, right, _invert ? "op_Inequality" : "op_Equality", out var opResult))
@@ -473,10 +496,10 @@ internal abstract class JintBinaryExpression : JintExpression
 
         protected override object EvaluateInternal(EvaluationContext context)
         {
-            EnsureInitialized();
-
-            var leftValue = _left.GetValue(context);
-            var rightValue = _right.GetValue(context);
+            if (!TryEvaluateOperands(context, out var leftValue, out var rightValue))
+            {
+                return JsValue.Undefined;
+            }
 
             if (context.OperatorOverloadingAllowed
                 && TryOperatorOverloading(context, leftValue, rightValue, _leftFirst ? "op_GreaterThanOrEqual" : "op_LessThanOrEqual", out var opResult))
@@ -500,10 +523,11 @@ internal abstract class JintBinaryExpression : JintExpression
 
         protected override object EvaluateInternal(EvaluationContext context)
         {
-            EnsureInitialized();
+            if (!TryEvaluateOperands(context, out var leftValue, out var rightValue))
+            {
+                return JsValue.Undefined;
+            }
 
-            var leftValue = _left.GetValue(context);
-            var rightValue = _right.GetValue(context);
             return leftValue.InstanceofOperator(rightValue) ? JsBoolean.True : JsBoolean.False;
         }
     }
@@ -516,16 +540,16 @@ internal abstract class JintBinaryExpression : JintExpression
 
         protected override object EvaluateInternal(EvaluationContext context)
         {
-            EnsureInitialized();
-
-            var leftReference = _left.GetValue(context);
-            var rightReference = _right.GetValue(context);
+            if (!TryEvaluateOperands(context, out var leftReference, out var rightReference))
+            {
+                return JsValue.Undefined;
+            }
 
             var left = TypeConverter.ToNumeric(leftReference);
             var right = TypeConverter.ToNumeric(rightReference);
 
             JsValue result;
-            if (AreNonBigIntOperands(left,right))
+            if (AreNonBigIntOperands(left, right))
             {
                 // validation
                 var baseNumber = (JsNumber) left;
@@ -621,12 +645,12 @@ internal abstract class JintBinaryExpression : JintExpression
                 var exponent = right.AsBigInt();
                 if (exponent < 0)
                 {
-                    ExceptionHelper.ThrowRangeError(context.Engine.Realm, "Exponent must be positive");
+                    Throw.RangeError(context.Engine.Realm, "Exponent must be positive");
                 }
 
                 if (exponent > int.MaxValue || exponent < int.MinValue)
                 {
-                    ExceptionHelper.ThrowTypeError(context.Engine.Realm, "Exponent does not fit 32bit range");
+                    Throw.TypeError(context.Engine.Realm, "Exponent does not fit 32bit range");
                 }
                 result = JsBigInt.Create(BigInteger.Pow(left.AsBigInt(), (int) exponent));
             }
@@ -643,15 +667,15 @@ internal abstract class JintBinaryExpression : JintExpression
 
         protected override object EvaluateInternal(EvaluationContext context)
         {
-            EnsureInitialized();
-
-            var left = _left.GetValue(context);
-            var right = _right.GetValue(context);
+            if (!TryEvaluateOperands(context, out var left, out var right))
+            {
+                return JsValue.Undefined;
+            }
 
             var oi = right as ObjectInstance;
             if (oi is null)
             {
-                ExceptionHelper.ThrowTypeError(context.Engine.Realm, "in can only be used with an object");
+                Throw.TypeError(context.Engine.Realm, "in can only be used with an object");
             }
 
             if (left.IsPrivateName())
@@ -673,10 +697,10 @@ internal abstract class JintBinaryExpression : JintExpression
 
         protected override object EvaluateInternal(EvaluationContext context)
         {
-            EnsureInitialized();
-
-            var left = _left.GetValue(context);
-            var right = _right.GetValue(context);
+            if (!TryEvaluateOperands(context, out var left, out var right))
+            {
+                return JsValue.Undefined;
+            }
 
             if (context.OperatorOverloadingAllowed
                 && TryOperatorOverloading(context, left, right, "op_Modulus", out var opResult))
@@ -684,80 +708,7 @@ internal abstract class JintBinaryExpression : JintExpression
                 return JsValue.FromObject(context.Engine, opResult);
             }
 
-            var result = JsValue.Undefined;
-            left = TypeConverter.ToNumeric(left);
-            right = TypeConverter.ToNumeric(right);
-
-            if (AreIntegerOperands(left, right))
-            {
-                var leftInteger = left.AsInteger();
-                var rightInteger = right.AsInteger();
-
-                if (rightInteger == 0)
-                {
-                    result = JsNumber.DoubleNaN;
-                }
-                else
-                {
-                    var modulo = leftInteger % rightInteger;
-                    if (modulo == 0 && leftInteger < 0)
-                    {
-                        result = JsNumber.NegativeZero;
-                    }
-                    else
-                    {
-                        result = JsNumber.Create(modulo);
-                    }
-                }
-            }
-            else if (AreNonBigIntOperands(left, right))
-            {
-                var n = left.AsNumber();
-                var d = right.AsNumber();
-
-                if (double.IsNaN(n) || double.IsNaN(d) || double.IsInfinity(n))
-                {
-                    result = JsNumber.DoubleNaN;
-                }
-                else if (double.IsInfinity(d))
-                {
-                    result = n;
-                }
-                else if (NumberInstance.IsPositiveZero(d) || NumberInstance.IsNegativeZero(d))
-                {
-                    result = JsNumber.DoubleNaN;
-                }
-                else if (NumberInstance.IsPositiveZero(n) || NumberInstance.IsNegativeZero(n))
-                {
-                    result = n;
-                }
-                else
-                {
-                    result = JsNumber.Create(n % d);
-                }
-            }
-            else
-            {
-                AssertValidBigIntArithmeticOperands(left, right);
-
-                var n = TypeConverter.ToBigInt(left);
-                var d = TypeConverter.ToBigInt(right);
-
-                if (d == 0)
-                {
-                    ExceptionHelper.ThrowRangeError(context.Engine.Realm, "Division by zero");
-                }
-                else if (n == 0)
-                {
-                    result = JsBigInt.Zero;
-                }
-                else
-                {
-                    result = JsBigInt.Create(n % d);
-                }
-            }
-
-            return result;
+            return Remainder(context, left, right);
         }
     }
 
@@ -789,10 +740,10 @@ internal abstract class JintBinaryExpression : JintExpression
 
         protected override object EvaluateInternal(EvaluationContext context)
         {
-            EnsureInitialized();
-
-            var lval = _left.GetValue(context);
-            var rval = _right.GetValue(context);
+            if (!TryEvaluateOperands(context, out var lval, out var rval))
+            {
+                return JsValue.Undefined;
+            }
 
             if (context.OperatorOverloadingAllowed
                 && TryOperatorOverloading(context, lval, rval, OperatorClrName, out var opResult))
@@ -805,7 +756,7 @@ internal abstract class JintBinaryExpression : JintExpression
 
             if (lnum.Type != rnum.Type)
             {
-                ExceptionHelper.ThrowTypeErrorNoEngine("Cannot mix BigInt and other types, use explicit conversions", _left._expression);
+                Throw.TypeErrorNoEngine("Cannot mix BigInt and other types, use explicit conversions", _left._expression);
             }
 
             if (AreIntegerOperands(lnum, rnum))
@@ -835,7 +786,7 @@ internal abstract class JintBinaryExpression : JintExpression
                         result = JsNumber.Create((uint) leftValue >> (int) ((uint) rightValue & 0x1F));
                         break;
                     default:
-                        ExceptionHelper.ThrowArgumentOutOfRangeException(nameof(_operator), "unknown shift operator");
+                        Throw.ArgumentOutOfRangeException(nameof(_operator), "unknown shift operator");
                         break;
                 }
 
@@ -901,13 +852,13 @@ internal abstract class JintBinaryExpression : JintExpression
                         {
                             return JsNumber.Create((uint) TypeConverter.ToInt32(left) >> (int) (TypeConverter.ToUint32(right) & 0x1F));
                         }
-                        ExceptionHelper.ThrowTypeErrorNoEngine("Cannot mix BigInt and other types, use explicit conversions", _left._expression);
+                        Throw.TypeErrorNoEngine("Cannot mix BigInt and other types, use explicit conversions", _left._expression);
                         return null;
                     }
 
                 default:
                     {
-                        ExceptionHelper.ThrowArgumentOutOfRangeException(nameof(_operator), "unknown shift operator");
+                        Throw.ArgumentOutOfRangeException(nameof(_operator), "unknown shift operator");
                         return null;
                     }
             }

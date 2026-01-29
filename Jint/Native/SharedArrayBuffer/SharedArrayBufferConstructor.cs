@@ -1,4 +1,3 @@
-using Jint.Collections;
 using Jint.Native.Function;
 using Jint.Native.Object;
 using Jint.Native.Symbol;
@@ -41,7 +40,7 @@ internal sealed class SharedArrayBufferConstructor : Constructor
 
         var symbols = new SymbolDictionary(1)
         {
-            [GlobalSymbolRegistry.Species] = new GetSetPropertyDescriptor(get: new ClrFunction(Engine, "get [Symbol.species]", Species, 0, lengthFlags), set: Undefined,PropertyFlag.Configurable),
+            [GlobalSymbolRegistry.Species] = new GetSetPropertyDescriptor(get: new ClrFunction(Engine, "get [Symbol.species]", Species, 0, lengthFlags), set: Undefined, PropertyFlag.Configurable),
         };
         SetSymbols(symbols);
     }
@@ -49,7 +48,7 @@ internal sealed class SharedArrayBufferConstructor : Constructor
     /// <summary>
     /// https://tc39.es/ecma262/#sec-arraybuffer.isview
     /// </summary>
-    private static JsValue IsView(JsValue thisObject, JsValue[] arguments)
+    private static JsValue IsView(JsValue thisObject, JsCallArguments arguments)
     {
         var arg = arguments.At(0);
         return arg is JsDataView or JsTypedArray;
@@ -58,22 +57,22 @@ internal sealed class SharedArrayBufferConstructor : Constructor
     /// <summary>
     /// https://tc39.es/ecma262/#sec-get-arraybuffer-@@species
     /// </summary>
-    private static JsValue Species(JsValue thisObject, JsValue[] arguments)
+    private static JsValue Species(JsValue thisObject, JsCallArguments arguments)
     {
         return thisObject;
     }
 
-    protected internal override JsValue Call(JsValue thisObject, JsValue[] arguments)
+    protected internal override JsValue Call(JsValue thisObject, JsCallArguments arguments)
     {
-        ExceptionHelper.ThrowTypeError(_realm, "Constructor SharedArrayBuffer requires 'new'");
+        Throw.TypeError(_realm, "Constructor SharedArrayBuffer requires 'new'");
         return Undefined;
     }
 
-    public override ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
+    public override ObjectInstance Construct(JsCallArguments arguments, JsValue newTarget)
     {
         if (newTarget.IsUndefined())
         {
-            ExceptionHelper.ThrowTypeError(_realm);
+            Throw.TypeError(_realm);
         }
 
         var length = arguments.At(0);
@@ -85,13 +84,13 @@ internal sealed class SharedArrayBufferConstructor : Constructor
         return AllocateSharedArrayBuffer(newTarget, byteLength, requestedMaxByteLength);
     }
 
-    private JsSharedArrayBuffer AllocateSharedArrayBuffer(JsValue constructor, uint byteLength, uint? maxByteLength  = null)
+    private JsSharedArrayBuffer AllocateSharedArrayBuffer(JsValue constructor, uint byteLength, uint? maxByteLength = null)
     {
         var allocatingGrowableBuffer = maxByteLength != null;
 
         if (allocatingGrowableBuffer && byteLength > maxByteLength)
         {
-            ExceptionHelper.ThrowRangeError(_realm);
+            Throw.RangeError(_realm);
         }
 
         var allocLength = maxByteLength.GetValueOrDefault(byteLength);

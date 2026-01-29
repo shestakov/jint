@@ -26,22 +26,22 @@ internal sealed class FinalizationRegistryConstructor : Constructor
 
     public FinalizationRegistryPrototype PrototypeObject { get; }
 
-    protected internal override JsValue Call(JsValue thisObject, JsValue[] arguments)
+    protected internal override JsValue Call(JsValue thisObject, JsCallArguments arguments)
     {
         return Construct(arguments, thisObject);
     }
 
-    public override ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
+    public override ObjectInstance Construct(JsCallArguments arguments, JsValue newTarget)
     {
         if (newTarget.IsUndefined())
         {
-            ExceptionHelper.ThrowTypeError(_realm);
+            Throw.TypeError(_realm);
         }
 
         var cleanupCallback = arguments.At(0);
         if (cleanupCallback is not ICallable callable)
         {
-            ExceptionHelper.ThrowTypeError(_realm, "cleanup must be callable");
+            Throw.TypeError(_realm, "cleanup must be callable");
             return null;
         }
 

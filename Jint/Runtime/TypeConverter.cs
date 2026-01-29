@@ -56,7 +56,7 @@ public static class TypeConverter
                 _ => JsString.DefaultString
             };
 
-            var str = exoticToPrim.Call(oi, new JsValue[] { hint });
+            var str = exoticToPrim.Call(oi, hint);
             if (str.IsPrimitive())
             {
                 return str;
@@ -64,7 +64,7 @@ public static class TypeConverter
 
             if (str.IsObject())
             {
-                ExceptionHelper.ThrowTypeError(oi.Engine.Realm, "Cannot convert object to primitive value");
+                Throw.TypeError(oi.Engine.Realm, "Cannot convert object to primitive value");
             }
         }
 
@@ -91,7 +91,7 @@ public static class TypeConverter
         }
         else
         {
-            ExceptionHelper.ThrowTypeError(input.Engine.Realm);
+            Throw.TypeError(input.Engine.Realm);
             return null;
         }
 
@@ -113,7 +113,7 @@ public static class TypeConverter
             }
         }
 
-        ExceptionHelper.ThrowTypeError(input.Engine.Realm);
+        Throw.TypeError(input.Engine.Realm);
         return null;
     }
 
@@ -170,7 +170,7 @@ public static class TypeConverter
             case InternalTypes.BigInt:
             case InternalTypes.Empty:
                 // TODO proper TypeError would require Engine instance and a lot of API changes
-                ExceptionHelper.ThrowTypeErrorNoEngine("Cannot convert a " + type + " value to a number");
+                Throw.TypeErrorNoEngine("Cannot convert a " + type + " value to a number");
                 return 0;
             default:
                 return ToNumber(ToPrimitive(o, Types.Number));
@@ -201,7 +201,7 @@ public static class TypeConverter
             case InternalTypes.BigInt:
             case InternalTypes.Empty:
                 // TODO proper TypeError would require Engine instance and a lot of API changes
-                ExceptionHelper.ThrowTypeErrorNoEngine("Cannot convert a " + type + " value to a number");
+                Throw.TypeErrorNoEngine("Cannot convert a " + type + " value to a number");
                 return JsNumber.PositiveZero;
             default:
                 return new JsNumber(ToNumber(ToPrimitive(o, Types.Number)));
@@ -274,12 +274,37 @@ public static class TypeConverter
             }
         }
 
+#if NETFRAMEWORK
+        // if we are on full framework, one extra check for whether it was actually over the bounds of double
+        // in modern NET parsing was fixed to be IEEE 754 compliant, full framework is not and cannot detect positive infinity
+        try
+        {
+            var targetString = firstChar == '-' ? input.Substring(1) : input;
+            var n = double.Parse(targetString, NumberStyles.AllowDecimalPoint | NumberStyles.AllowExponent, CultureInfo.InvariantCulture);
+
+            if (n == 0 && firstChar == '-')
+            {
+                return -0.0;
+            }
+
+            return firstChar == '-' ? -1 * n : n;
+        }
+        catch (Exception e) when (e is OverflowException)
+        {
+            return firstChar == '-' ? double.NegativeInfinity : double.PositiveInfinity;
+        }
+        catch
+        {
+            return double.NaN;
+        }
+#else
         if (double.TryParse(input, NumberStyles, CultureInfo.InvariantCulture, out var n))
         {
             return n == 0 && firstChar == '-' ? -0.0 : n;
         }
 
         return double.NaN;
+#endif
     }
 
     /// <summary>
@@ -557,7 +582,7 @@ public static class TypeConverter
             case Types.String:
                 return StringToBigInt(prim.ToString());
             default:
-                ExceptionHelper.ThrowTypeErrorNoEngine("Cannot convert a " + prim.Type + " to a BigInt");
+                Throw.TypeErrorNoEngine("Cannot convert a " + prim.Type + " to a BigInt");
                 return BigInteger.One;
         }
     }
@@ -579,7 +604,7 @@ public static class TypeConverter
             case Types.String:
                 return new JsBigInt(StringToBigInt(prim.ToString()));
             default:
-                ExceptionHelper.ThrowTypeErrorNoEngine("Cannot convert a " + prim.Type + " to a BigInt");
+                Throw.TypeErrorNoEngine("Cannot convert a " + prim.Type + " to a BigInt");
                 return JsBigInt.One;
         }
     }
@@ -645,7 +670,7 @@ public static class TypeConverter
             {
                 // we get better precision if we don't hit floating point parsing that is performed by Esprima
 #if SUPPORTS_SPAN_PARSE
-                    var source = str.AsSpan(2);
+                var source = str.AsSpan(2);
 #else
                 var source = str.Substring(2);
 #endif
@@ -778,13 +803,13 @@ public static class TypeConverter
         var integerIndex = ToIntegerOrInfinity(value);
         if (integerIndex < 0)
         {
-            ExceptionHelper.ThrowRangeError(realm);
+            Throw.RangeError(realm);
         }
 
         var index = ToLength(integerIndex);
         if (integerIndex != index)
         {
-            ExceptionHelper.ThrowRangeError(realm, "Invalid index");
+            Throw.RangeError(realm, "Invalid index");
         }
 
         return (uint) Math.Min(uint.MaxValue, index);
@@ -919,7 +944,7 @@ public static class TypeConverter
             case InternalTypes.BigInt:
                 return ToString(((JsBigInt) o)._value);
             case InternalTypes.Symbol:
-                ExceptionHelper.ThrowTypeErrorNoEngine("Cannot convert a Symbol value to a string");
+                Throw.TypeErrorNoEngine("Cannot convert a Symbol value to a string");
                 return null;
             case InternalTypes.Undefined:
                 return "undefined";
@@ -973,10 +998,10 @@ public static class TypeConverter
                 return intrinsics.Symbol.Construct((JsSymbol) value);
             case InternalTypes.Null:
             case InternalTypes.Undefined:
-                ExceptionHelper.ThrowTypeError(realm, "Cannot convert undefined or null to object");
+                Throw.TypeError(realm, "Cannot convert undefined or null to object");
                 return null;
             default:
-                ExceptionHelper.ThrowTypeError(realm, "Cannot convert given item to object");
+                Throw.TypeError(realm, "Cannot convert given item to object");
                 return null;
         }
     }
@@ -986,7 +1011,7 @@ public static class TypeConverter
         Engine engine,
         JsValue o,
         Node sourceNode,
-        string referenceName)
+        string? referenceName)
     {
         if (!engine._referenceResolver.CheckCoercible(o))
         {
@@ -999,7 +1024,7 @@ public static class TypeConverter
         Engine engine,
         JsValue o,
         Node sourceNode,
-        string referencedName)
+        string? referencedName)
     {
         referencedName ??= "unknown";
         var message = $"Cannot read property '{referencedName}' of {o}";
@@ -1007,11 +1032,17 @@ public static class TypeConverter
             .SetJavaScriptCallstack(engine, sourceNode.Location, overwriteExisting: true);
     }
 
-    public static void CheckObjectCoercible(Engine engine, JsValue o)
+    [Obsolete("Use TypeConverter.RequireObjectCoercible")]
+    public static void CheckObjectCoercible(Engine engine, JsValue o) => RequireObjectCoercible(engine, o);
+
+    /// <summary>
+    /// https://tc39.es/ecma262/#sec-requireobjectcoercible
+    /// </summary>
+    public static void RequireObjectCoercible(Engine engine, JsValue o)
     {
         if (o._type < InternalTypes.Boolean)
         {
-            ExceptionHelper.ThrowTypeError(engine.Realm, "Cannot call method on " + o);
+            Throw.TypeError(engine.Realm, $"Cannot call method on {o}");
         }
     }
 }

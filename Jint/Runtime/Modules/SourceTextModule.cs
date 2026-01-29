@@ -1,4 +1,6 @@
 ﻿using System.Diagnostics;
+using Jint.Native;
+using Jint.Native.AsyncFunction;
 using Jint.Native.Object;
 using Jint.Native.Promise;
 using Jint.Runtime.Environments;
@@ -30,8 +32,12 @@ internal class SourceTextModule : CyclicModule
     private readonly List<ExportEntry> _indirectExportEntries;
     private readonly List<ExportEntry> _starExportEntries;
 
-    internal SourceTextModule(Engine engine, Realm realm, in Prepared<AstModule> source, string? location, bool async)
-        : base(engine, realm, location, async)
+    // For TLA (Top-Level Await) support
+    private JintStatementList? _tlaStatementList;
+    private AsyncFunctionInstance? _tlaAsyncInstance;
+
+    internal SourceTextModule(Engine engine, Realm realm, in Prepared<AstModule> source, string? location, bool isAsync)
+        : base(engine, realm, location, isAsync)
     {
         Debug.Assert(source.IsValid);
         _source = source.Program!;
@@ -204,7 +210,7 @@ internal class SourceTextModule : CyclicModule
             var resolution = ResolveExport(e.ExportName);
             if (resolution is null || resolution == ResolvedBinding.Ambiguous)
             {
-                ExceptionHelper.ThrowSyntaxError(_realm, "Ambiguous import statement for identifier: " + e.ExportName);
+                Throw.SyntaxError(_realm, "Ambiguous import statement for identifier: " + e.ExportName);
             }
         }
 
@@ -221,22 +227,22 @@ internal class SourceTextModule : CyclicModule
                 if (string.Equals(ie.ImportName, "*", StringComparison.Ordinal))
                 {
                     var ns = GetModuleNamespace(importedModule);
-                    env.CreateImmutableBinding(ie.LocalName, true);
-                    env.InitializeBinding(ie.LocalName, ns);
+                    env.CreateImmutableBinding(ie.LocalName, strict: true);
+                    env.InitializeBinding(ie.LocalName, ns, DisposeHint.Normal);
                 }
                 else
                 {
                     var resolution = importedModule.ResolveExport(ie.ImportName);
                     if (resolution is null || resolution == ResolvedBinding.Ambiguous)
                     {
-                        ExceptionHelper.ThrowSyntaxError(_realm, "Ambiguous import statement for identifier " + ie.ImportName);
+                        Throw.SyntaxError(_realm, "Ambiguous import statement for identifier " + ie.ImportName);
                     }
 
                     if (string.Equals(resolution.BindingName, "*namespace*", StringComparison.Ordinal))
                     {
                         var ns = GetModuleNamespace(resolution.Module);
-                        env.CreateImmutableBinding(ie.LocalName, true);
-                        env.InitializeBinding(ie.LocalName, ns);
+                        env.CreateImmutableBinding(ie.LocalName, strict: true);
+                        env.InitializeBinding(ie.LocalName, ns, DisposeHint.Normal);
                     }
                     else
                     {
@@ -269,32 +275,27 @@ internal class SourceTextModule : CyclicModule
                     if (declaredVarNames.Add(dn))
                     {
                         env.CreateMutableBinding(dn);
-                        env.InitializeBinding(dn, Undefined);
+                        env.InitializeBinding(dn, Undefined, d.Kind.GetDisposeHint());
                     }
                 }
             }
         }
 
-        var lexDeclarations = hoistingScope._lexicalDeclarations;
-
-        if (lexDeclarations != null)
+        if (hoistingScope._lexicalDeclarations != null)
         {
-            var boundNames = new List<Key>();
-            for (var i = 0; i < lexDeclarations.Count; i++)
+            var cache = DeclarationCacheBuilder.Build(hoistingScope._lexicalDeclarations);
+            for (var i = 0; i < cache.Declarations.Count; i++)
             {
-                var d = lexDeclarations[i];
-                boundNames.Clear();
-                d.GetBoundNames(boundNames);
-                for (var j = 0; j < boundNames.Count; j++)
+                var declaration = cache.Declarations[i];
+                foreach (var bn in declaration.BoundNames)
                 {
-                    var dn = boundNames[j];
-                    if (d.IsConstantDeclaration())
+                    if (declaration.IsConstantDeclaration)
                     {
-                        env.CreateImmutableBinding(dn);
+                        env.CreateImmutableBinding(bn);
                     }
                     else
                     {
-                        env.CreateMutableBinding(dn);
+                        env.CreateMutableBinding(bn);
                     }
                 }
             }
@@ -315,7 +316,7 @@ internal class SourceTextModule : CyclicModule
                 {
                     fo.SetFunctionName("default");
                 }
-                env.InitializeBinding(fn, fo);
+                env.InitializeBinding(fn, fo, DisposeHint.Normal);
             }
         }
 
@@ -332,24 +333,107 @@ internal class SourceTextModule : CyclicModule
         {
             using (new StrictModeScope(strict: true, force: true))
             {
+                var result = Completion.Empty();
                 _engine.EnterExecutionContext(moduleContext);
                 try
                 {
                     var statementList = new JintStatementList(statement: null, _source.Body);
+
+                    //Create new evaluation context when called from e.g. module tests
                     var context = _engine._activeEvaluationContext ?? new EvaluationContext(_engine);
-                    var result = statementList.Execute(context); //Create new evaluation context when called from e.g. module tests
-                    return result;
+
+                    result = statementList.Execute(context);
                 }
                 finally
                 {
+                    result = _environment.DisposeResources(result);
                     _engine.LeaveExecutionContext();
                 }
+
+                return result;
             }
         }
         else
         {
-            ExceptionHelper.ThrowNotImplementedException("async modules not implemented");
-            return default;
+            // https://tc39.es/ecma262/#sec-source-text-module-record-execute-module
+            // Top-Level Await: execute module asynchronously
+            using (new StrictModeScope(strict: true, force: true))
+            {
+                _engine.EnterExecutionContext(moduleContext);
+
+                // Create the statement list and async instance once, reuse for resumption
+                if (_tlaStatementList is null)
+                {
+                    _tlaStatementList = new JintStatementList(statement: null, _source.Body);
+                    _tlaAsyncInstance = new AsyncFunctionInstance
+                    {
+                        _state = AsyncFunctionState.Executing,
+                        _capability = capability!,
+                        _body = _tlaStatementList
+                    };
+                }
+                else
+                {
+                    // Update capability for this execution (may differ between calls)
+                    _tlaAsyncInstance!._capability = capability!;
+                    _tlaAsyncInstance._state = AsyncFunctionState.Executing;
+                }
+
+                // Update the execution context with the async function instance
+                var asyncContext = _engine.ExecutionContext.UpdateAsyncFunction(_tlaAsyncInstance);
+                _tlaAsyncInstance._savedContext = asyncContext;
+
+                // Replace the current execution context with the updated one
+                _engine.LeaveExecutionContext();
+                _engine.EnterExecutionContext(asyncContext);
+
+                // Create evaluation context
+                var context = _engine._activeEvaluationContext ?? new EvaluationContext(_engine);
+
+                Completion result;
+                try
+                {
+                    result = _tlaStatementList.Execute(context);
+                }
+                catch (JavaScriptException e)
+                {
+                    result = _environment.DisposeResources(new Completion(CompletionType.Throw, e.Error, null!));
+                    _engine.LeaveExecutionContext();
+                    _tlaAsyncInstance._state = AsyncFunctionState.Completed;
+                    capability!.Reject.Call(JsValue.Undefined, e.Error);
+                    return result;
+                }
+
+                // Check if we suspended at an await
+                if (_tlaAsyncInstance._state == AsyncFunctionState.SuspendedAwait)
+                {
+                    // Suspended - promise reaction will resume execution later
+                    // Leave context to restore caller's context (will re-enter on resume)
+                    _engine.LeaveExecutionContext();
+                    return new Completion(CompletionType.Normal, JsValue.Undefined, null!);
+                }
+
+                result = _environment.DisposeResources(result);
+                _engine.LeaveExecutionContext();
+
+                // Completed - resolve or reject via the capability
+                _tlaAsyncInstance._state = AsyncFunctionState.Completed;
+
+                if (result.Type == CompletionType.Normal)
+                {
+                    capability!.Resolve.Call(JsValue.Undefined, JsValue.Undefined);
+                }
+                else if (result.Type == CompletionType.Throw)
+                {
+                    capability!.Reject.Call(JsValue.Undefined, result.Value);
+                }
+                else
+                {
+                    capability!.Resolve.Call(JsValue.Undefined, result.Value);
+                }
+
+                return result;
+            }
         }
     }
 }

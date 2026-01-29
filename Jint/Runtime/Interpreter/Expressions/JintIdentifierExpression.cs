@@ -36,9 +36,12 @@ internal sealed class JintIdentifierExpression : JintExpression
         var engine = context.Engine;
         var env = engine.ExecutionContext.LexicalEnvironment;
         var strict = StrictModeScope.IsStrictModeCode;
-        var identifierEnvironment = JintEnvironment.TryGetIdentifierEnvironmentWithBinding(env, _identifier, out var temp)
-            ? temp
-            : JsValue.Undefined;
+
+        if (!JintEnvironment.TryGetIdentifierEnvironmentWithBinding(env, _identifier, out var identifierEnvironment))
+        {
+            // Binding not found - create unresolvable reference
+            return engine._referencePool.Rent(Reference.Unresolvable, _identifier.Value, strict, thisValue: null);
+        }
 
         return engine._referencePool.Rent(identifierEnvironment, _identifier.Value, strict, thisValue: null);
     }
@@ -56,10 +59,12 @@ internal sealed class JintIdentifierExpression : JintExpression
 
         var engine = context.Engine;
         var env = engine.ExecutionContext.LexicalEnvironment;
+        var strict = StrictModeScope.IsStrictModeCode;
 
         if (JintEnvironment.TryGetIdentifierEnvironmentWithBindingValue(
                 env,
                 identifier,
+                strict,
                 out _,
                 out var value))
         {
@@ -70,7 +75,7 @@ internal sealed class JintIdentifierExpression : JintExpression
         }
         else
         {
-            var reference = engine._referencePool.Rent(JsValue.Undefined, identifier.Value, StrictModeScope.IsStrictModeCode, thisValue: null);
+            var reference = engine._referencePool.Rent(Reference.Unresolvable, identifier.Value, strict, thisValue: null);
             value = engine.GetValue(reference, returnReferenceToPool: true);
         }
 
@@ -87,6 +92,6 @@ internal sealed class JintIdentifierExpression : JintExpression
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void ThrowNotInitialized(Engine engine)
     {
-        ExceptionHelper.ThrowReferenceError(engine.Realm, $"{_identifier.Key.Name} has not been initialized");
+        Throw.ReferenceError(engine.Realm, $"{_identifier.Key.Name} has not been initialized");
     }
 }

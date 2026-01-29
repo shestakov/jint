@@ -27,7 +27,7 @@ public class ArrayInstance : ObjectInstance, IEnumerable<JsValue>
 
     private protected ArrayInstance(Engine engine, InternalTypes type) : base(engine, type: type)
     {
-        _dense = System.Array.Empty<JsValue?>();
+        _dense = [];
     }
 
     private protected ArrayInstance(Engine engine, uint capacity = 0, uint length = 0) : base(engine, type: InternalTypes.Object | InternalTypes.Array)
@@ -36,7 +36,7 @@ public class ArrayInstance : ObjectInstance, IEnumerable<JsValue>
 
         if (capacity < MaxDenseArrayLength)
         {
-            _dense = capacity > 0 ? new JsValue?[capacity] : System.Array.Empty<JsValue?>();
+            _dense = capacity > 0 ? new JsValue?[capacity] : [];
         }
         else
         {
@@ -139,7 +139,7 @@ public class ArrayInstance : ObjectInstance, IEnumerable<JsValue>
         uint newLen = TypeConverter.ToUint32(value);
         if (newLen != TypeConverter.ToNumber(value))
         {
-            ExceptionHelper.ThrowRangeError(_engine.Realm);
+            Throw.RangeError(_engine.Realm);
         }
 
         var oldLenDesc = _length;
@@ -661,7 +661,7 @@ public class ArrayInstance : ObjectInstance, IEnumerable<JsValue>
     {
         if (!Delete(index))
         {
-            ExceptionHelper.ThrowTypeError(_engine.Realm);
+            Throw.TypeError(_engine.Realm);
         }
         return true;
     }
@@ -951,9 +951,7 @@ public class ArrayInstance : ObjectInstance, IEnumerable<JsValue>
         }
 
         // need to grow
-        var newArray = new JsValue[capacity];
-        System.Array.Copy(dense, newArray, dense.Length);
-        _dense = newArray;
+        System.Array.Resize(ref _dense, (int) capacity);
     }
 
     public JsValue[] ToArray()
@@ -1055,7 +1053,7 @@ public class ArrayInstance : ObjectInstance, IEnumerable<JsValue>
         {
             if (!Set(CommonProperties.Length, newLength))
             {
-                ExceptionHelper.ThrowTypeError(_engine.Realm);
+                Throw.TypeError(_engine.Realm);
             }
         }
     }
@@ -1102,7 +1100,7 @@ public class ArrayInstance : ObjectInstance, IEnumerable<JsValue>
         {
             if (!Set(CommonProperties.Length, newLength))
             {
-                ExceptionHelper.ThrowTypeError(_engine.Realm);
+                Throw.TypeError(_engine.Realm);
             }
         }
 
@@ -1122,7 +1120,7 @@ public class ArrayInstance : ObjectInstance, IEnumerable<JsValue>
 
         if (!Delete(newLength, unwrapFromNonDataDescriptor: true, out var element))
         {
-            ExceptionHelper.ThrowTypeError(_engine.Realm);
+            Throw.TypeError(_engine.Realm);
         }
 
         SetLength(newLength);
@@ -1153,7 +1151,7 @@ public class ArrayInstance : ObjectInstance, IEnumerable<JsValue>
         }
     }
 
-    internal JsArray Map(JsValue[] arguments)
+    internal JsArray Map(JsCallArguments arguments)
     {
         var callbackfn = arguments.At(0);
         var thisArg = arguments.At(1);
@@ -1188,7 +1186,7 @@ public class ArrayInstance : ObjectInstance, IEnumerable<JsValue>
 
     /// <inheritdoc />
     internal sealed override bool FindWithCallback(
-        JsValue[] arguments,
+        JsCallArguments arguments,
         out ulong index,
         out JsValue value,
         bool visitUnassigned,
@@ -1362,7 +1360,7 @@ public class ArrayInstance : ObjectInstance, IEnumerable<JsValue>
 
     private static void ThrowMaximumArraySizeReachedException(Engine engine, uint capacity)
     {
-        ExceptionHelper.ThrowMemoryLimitExceededException(
+        Throw.MemoryLimitExceededException(
             $"The array size {capacity} is larger than maximum allowed ({engine.Options.Constraints.MaxArraySize})"
         );
     }

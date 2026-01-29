@@ -39,7 +39,7 @@ internal sealed class DelegateWrapper : Function
         }
     }
 
-    protected internal override JsValue Call(JsValue thisObject, JsValue[] arguments)
+    protected internal override JsValue Call(JsValue thisObject, JsCallArguments arguments)
     {
         var parameterInfos = _d.Method.GetParameters();
 
@@ -70,7 +70,7 @@ internal sealed class DelegateWrapper : Function
             var value = arguments[i];
             object? converted;
 
-            if (parameterType == typeof(JsValue))
+            if (typeof(JsValue).IsAssignableFrom(parameterType))
             {
                 converted = value;
             }
@@ -142,7 +142,7 @@ internal sealed class DelegateWrapper : Function
         }
         catch (TargetInvocationException exception)
         {
-            ExceptionHelper.ThrowMeaningfulException(Engine, exception);
+            Throw.MeaningfulException(Engine, exception);
             throw;
         }
     }
@@ -158,19 +158,19 @@ internal sealed class DelegateWrapper : Function
             return true;
         }
 #if NETSTANDARD2_1_OR_GREATER || NETCOREAPP
-            if (obj is ValueTask)
-            {
-                return true;
-            }
+        if (obj is ValueTask)
+        {
+            return true;
+        }
 
-            // ValueTask<T> is not derived from ValueTask, so we need to check for it explicitly
-            var type = obj.GetType();
-            if (!type.IsGenericType)
-            {
-                return false;
-            }
+        // ValueTask<T> is not derived from ValueTask, so we need to check for it explicitly
+        var type = obj.GetType();
+        if (!type.IsGenericType)
+        {
+            return false;
+        }
 
-            return type.GetGenericTypeDefinition() == typeof(ValueTask<>);
+        return type.GetGenericTypeDefinition() == typeof(ValueTask<>);
 #else
         return false;
 #endif

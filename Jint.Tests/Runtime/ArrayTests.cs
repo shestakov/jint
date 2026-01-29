@@ -40,6 +40,22 @@ public class ArrayTests
     }
 
     [Fact]
+    public void ArrayPrototypeJoinWithCircularReference()
+    {
+        var result = _engine.Evaluate("Array.prototype.join.call((c = [1, 2, 3, 4], b = [1, 2, 3, 4], b[1] = c, c[1] = b, c))").AsString();
+
+        Assert.Equal("1,1,,3,4,3,4", result);
+    }
+
+    [Fact]
+    public void ArrayPrototypeToLocaleStringWithCircularReference()
+    {
+        var result = _engine.Evaluate("Array.prototype.toLocaleString.call((c = [1, 2, 3, 4], b = [1, 2, 3, 4], b[1] = c, c[1] = b, c))").AsString();
+
+        Assert.Equal("1,1,,3,4,3,4", result);
+    }
+
+    [Fact]
     public void EmptyStringKey()
     {
         var result = _engine.Evaluate("var x=[];x[\"\"]=8;x[\"\"];").AsNumber();
@@ -330,7 +346,7 @@ return get + '' === ""length,0,1,2,3"";";
     public void ShouldBeAbleToInitFromArray()
     {
         var engine = new Engine();
-        var propertyDescriptors = new JsArray(engine, new JsValue[] { 1 }).GetOwnProperties().ToArray();
+        var propertyDescriptors = new JsArray(engine, [1]).GetOwnProperties().ToArray();
         Assert.Equal(2, propertyDescriptors.Length);
         Assert.Equal("0", propertyDescriptors[0].Key);
         Assert.Equal(1, propertyDescriptors[0].Value.Value);
@@ -356,5 +372,19 @@ return get + '' === ""length,0,1,2,3"";";
         enumerableResult.Should().HaveCount(2);
         enumerableResult[0].Key.Should().Be(item2.Key);
         enumerableResult[1].Key.Should().Be(item1.Key);
+    }
+
+    [Fact]
+    public void PopWrappedGenericList()
+    {
+        var engine = new Engine();
+        var list = new List<int> { 1, 2, 3 };
+        engine.SetValue("list", list);
+        var result = engine.Evaluate("list.pop()").AsNumber();
+
+        Assert.Equal(3, result);
+        Assert.Equal(2, list.Count);
+        Assert.Equal(1, list[0]);
+        Assert.Equal(2, list[1]);
     }
 }

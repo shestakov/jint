@@ -4,7 +4,7 @@ using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
-using Jint.Collections;
+using Jint.Native.Intl;
 using Jint.Native.Json;
 using Jint.Native.Object;
 using Jint.Native.RegExp;
@@ -98,14 +98,14 @@ internal sealed class StringPrototype : StringInstance
 
     internal override bool HasOriginalIterator => ReferenceEquals(Get(GlobalSymbolRegistry.Iterator), _originalIteratorFunction);
 
-    private ObjectInstance Iterator(JsValue thisObject, JsValue[] arguments)
+    private ObjectInstance Iterator(JsValue thisObject, JsCallArguments arguments)
     {
-        TypeConverter.CheckObjectCoercible(_engine, thisObject);
+        TypeConverter.RequireObjectCoercible(_engine, thisObject);
         var str = TypeConverter.ToString(thisObject);
         return _realm.Intrinsics.StringIteratorPrototype.Construct(str);
     }
 
-    private JsValue ToStringString(JsValue thisObject, JsValue[] arguments)
+    private JsValue ToStringString(JsValue thisObject, JsCallArguments arguments)
     {
         if (thisObject.IsString())
         {
@@ -115,7 +115,7 @@ internal sealed class StringPrototype : StringInstance
         var s = TypeConverter.ToObject(_realm, thisObject) as StringInstance;
         if (s is null)
         {
-            ExceptionHelper.ThrowTypeError(_realm);
+            Throw.TypeError(_realm);
         }
 
         return s.StringData;
@@ -193,9 +193,9 @@ internal sealed class StringPrototype : StringInstance
     /// https://tc39.es/ecma262/#sec-string.prototype.trim
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private JsValue Trim(JsValue thisObject, JsValue[] arguments)
+    private JsValue Trim(JsValue thisObject, JsCallArguments arguments)
     {
-        TypeConverter.CheckObjectCoercible(Engine, thisObject);
+        TypeConverter.RequireObjectCoercible(Engine, thisObject);
         var s = TypeConverter.ToJsString(thisObject);
         if (s.Length == 0 || (!IsWhiteSpaceEx(s[0]) && !IsWhiteSpaceEx(s[s.Length - 1])))
         {
@@ -207,9 +207,9 @@ internal sealed class StringPrototype : StringInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-string.prototype.trimstart
     /// </summary>
-    private JsValue TrimStart(JsValue thisObject, JsValue[] arguments)
+    private JsValue TrimStart(JsValue thisObject, JsCallArguments arguments)
     {
-        TypeConverter.CheckObjectCoercible(Engine, thisObject);
+        TypeConverter.RequireObjectCoercible(Engine, thisObject);
         var s = TypeConverter.ToJsString(thisObject);
         if (s.Length == 0 || !IsWhiteSpaceEx(s[0]))
         {
@@ -221,9 +221,9 @@ internal sealed class StringPrototype : StringInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-string.prototype.trimend
     /// </summary>
-    private JsValue TrimEnd(JsValue thisObject, JsValue[] arguments)
+    private JsValue TrimEnd(JsValue thisObject, JsCallArguments arguments)
     {
-        TypeConverter.CheckObjectCoercible(Engine, thisObject);
+        TypeConverter.RequireObjectCoercible(Engine, thisObject);
         var s = TypeConverter.ToJsString(thisObject);
         if (s.Length == 0 || !IsWhiteSpaceEx(s[s.Length - 1]))
         {
@@ -232,9 +232,9 @@ internal sealed class StringPrototype : StringInstance
         return TrimEndEx(s.ToString());
     }
 
-    private JsValue ToLocaleUpperCase(JsValue thisObject, JsValue[] arguments)
+    private JsValue ToLocaleUpperCase(JsValue thisObject, JsCallArguments arguments)
     {
-        TypeConverter.CheckObjectCoercible(_engine, thisObject);
+        TypeConverter.RequireObjectCoercible(_engine, thisObject);
         var s = TypeConverter.ToString(thisObject);
         var culture = CultureInfo.InvariantCulture;
         if (arguments.Length > 0 && arguments[0].IsString())
@@ -246,7 +246,7 @@ internal sealed class StringPrototype : StringInstance
             }
             catch (CultureNotFoundException)
             {
-                ExceptionHelper.ThrowRangeError(_realm, "Incorrect culture information provided");
+                Throw.RangeError(_realm, "Incorrect culture information provided");
             }
         }
         if (string.Equals("lt", culture.Name, StringComparison.OrdinalIgnoreCase))
@@ -264,25 +264,143 @@ internal sealed class StringPrototype : StringInstance
         return new JsString(s.ToUpper(culture));
     }
 
-    private JsValue ToUpperCase(JsValue thisObject, JsValue[] arguments)
+    private JsValue ToUpperCase(JsValue thisObject, JsCallArguments arguments)
     {
-        TypeConverter.CheckObjectCoercible(_engine, thisObject);
+        TypeConverter.RequireObjectCoercible(_engine, thisObject);
         var s = TypeConverter.ToString(thisObject);
         return new JsString(s.ToUpperInvariant());
     }
 
-    private JsValue ToLocaleLowerCase(JsValue thisObject, JsValue[] arguments)
+    private JsValue ToLocaleLowerCase(JsValue thisObject, JsCallArguments arguments)
     {
-        TypeConverter.CheckObjectCoercible(_engine, thisObject);
+        TypeConverter.RequireObjectCoercible(_engine, thisObject);
         var s = TypeConverter.ToString(thisObject);
-        return new JsString(s.ToLower(CultureInfo.InvariantCulture));
+        return ToLowerCaseWithSpecialCasing(s, CultureInfo.InvariantCulture);
     }
 
-    private JsValue ToLowerCase(JsValue thisObject, JsValue[] arguments)
+    private JsValue ToLowerCase(JsValue thisObject, JsCallArguments arguments)
     {
-        TypeConverter.CheckObjectCoercible(_engine, thisObject);
+        TypeConverter.RequireObjectCoercible(_engine, thisObject);
         var s = TypeConverter.ToString(thisObject);
-        return s.ToLowerInvariant();
+        return ToLowerCaseWithSpecialCasing(s, CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
+    /// Converts string to lowercase with Unicode special casing rules.
+    /// Handles Final_Sigma context for Greek capital sigma (U+03A3).
+    /// https://unicode.org/reports/tr21/tr21-5.html#SpecialCasing
+    /// </summary>
+    private static string ToLowerCaseWithSpecialCasing(string s, CultureInfo culture)
+    {
+        const char GreekCapitalSigma = '\u03A3';
+
+        // Fast path: if no Greek capital sigma, use standard lowercase
+        if (s.IndexOf(GreekCapitalSigma) < 0)
+        {
+            return s.ToLower(culture);
+        }
+
+        // Need to handle Final_Sigma context
+        var result = new char[s.Length];
+        for (var i = 0; i < s.Length; i++)
+        {
+            var c = s[i];
+            if (c == GreekCapitalSigma)
+            {
+                // Check if this is a Final_Sigma context
+                // Final_Sigma: preceded by cased letter (skipping Case_Ignorable), not followed by cased letter (skipping Case_Ignorable)
+                result[i] = IsFinalSigmaContext(s, i) ? '\u03C2' : '\u03C3';
+            }
+            else
+            {
+                result[i] = char.ToLower(c, culture);
+            }
+        }
+
+        return new string(result);
+    }
+
+    /// <summary>
+    /// Determines if the character at the given position is in a Final_Sigma context.
+    /// Final_Sigma: C is preceded by a sequence consisting of a cased letter and then zero or more Case_Ignorable characters,
+    /// and C is NOT followed by a sequence consisting of zero or more Case_Ignorable characters and then a cased letter.
+    /// https://unicode.org/reports/tr21/tr21-5.html#Context
+    /// </summary>
+    private static bool IsFinalSigmaContext(string s, int index)
+    {
+        // Check backward: must find a cased letter (skipping Case_Ignorable)
+        var foundCasedBefore = false;
+        for (var i = index - 1; i >= 0; i--)
+        {
+            var c = s[i];
+            if (IsCased(c))
+            {
+                foundCasedBefore = true;
+                break;
+            }
+            if (!IsCaseIgnorable(c))
+            {
+                break;
+            }
+        }
+
+        if (!foundCasedBefore)
+        {
+            return false;
+        }
+
+        // Check forward: must NOT find a cased letter (skipping Case_Ignorable)
+        for (var i = index + 1; i < s.Length; i++)
+        {
+            var c = s[i];
+            if (IsCased(c))
+            {
+                return false; // Found cased letter after, so NOT Final_Sigma
+            }
+            if (!IsCaseIgnorable(c))
+            {
+                break;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Checks if a character is "cased" (has uppercase or lowercase property).
+    /// A character is cased if it has the Lowercase or Uppercase property, or has General_Category=Titlecase_Letter.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool IsCased(char c)
+    {
+        // Cased = Lowercase OR Uppercase OR General_Category=Lt
+        return char.IsLetter(c) && (char.IsLower(c) || char.IsUpper(c) || CharUnicodeInfo.GetUnicodeCategory(c) == UnicodeCategory.TitlecaseLetter);
+    }
+
+    /// <summary>
+    /// Checks if a character is Case_Ignorable.
+    /// Case_Ignorable characters include: Mn (Nonspacing_Mark), Me (Enclosing_Mark), Cf (Format),
+    /// Lm (Modifier_Letter), Sk (Modifier_Symbol), and characters with Word_Break property MidLetter, MidNumLet, or Single_Quote.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool IsCaseIgnorable(char c)
+    {
+        var category = CharUnicodeInfo.GetUnicodeCategory(c);
+        return category == UnicodeCategory.NonSpacingMark ||      // Mn
+               category == UnicodeCategory.EnclosingMark ||       // Me
+               category == UnicodeCategory.Format ||              // Cf (includes U+180E Mongolian Vowel Separator)
+               category == UnicodeCategory.ModifierLetter ||      // Lm
+               category == UnicodeCategory.ModifierSymbol ||      // Sk
+               c == '\u0027' ||                                   // APOSTROPHE (Word_Break=Single_Quote)
+               c == '\u00B7' ||                                   // MIDDLE DOT (Word_Break=MidLetter)
+               c == '\u0387' ||                                   // GREEK ANO TELEIA (Word_Break=MidLetter)
+               c == '\u05F4' ||                                   // HEBREW PUNCTUATION GERSHAYIM (Word_Break=MidLetter)
+               c == '\u2019' ||                                   // RIGHT SINGLE QUOTATION MARK (Word_Break=Single_Quote)
+               c == '\u2027' ||                                   // HYPHENATION POINT (Word_Break=MidLetter)
+               c == '\uFE13' ||                                   // PRESENTATION FORM FOR VERTICAL COLON (Word_Break=MidLetter)
+               c == '\uFE55' ||                                   // SMALL COLON (Word_Break=MidLetter)
+               c == '\uFF07' ||                                   // FULLWIDTH APOSTROPHE (Word_Break=MidNumLet)
+               c == '\uFF1A';                                     // FULLWIDTH COLON (Word_Break=MidLetter)
     }
 
     private static int ToIntegerSupportInfinity(JsValue numberVal)
@@ -306,9 +424,9 @@ internal sealed class StringPrototype : StringInstance
         return intVal;
     }
 
-    private JsValue Substring(JsValue thisObject, JsValue[] arguments)
+    private JsValue Substring(JsValue thisObject, JsCallArguments arguments)
     {
-        TypeConverter.CheckObjectCoercible(Engine, thisObject);
+        TypeConverter.RequireObjectCoercible(Engine, thisObject);
 
         var s = TypeConverter.ToString(thisObject);
         var start = TypeConverter.ToNumber(arguments.At(0));
@@ -348,7 +466,7 @@ internal sealed class StringPrototype : StringInstance
         return new JsString(s.Substring(from, length));
     }
 
-    private static JsValue Substr(JsValue thisObject, JsValue[] arguments)
+    private static JsValue Substr(JsValue thisObject, JsCallArguments arguments)
     {
         var s = TypeConverter.ToString(thisObject);
         var start = TypeConverter.ToInteger(arguments.At(0));
@@ -375,9 +493,9 @@ internal sealed class StringPrototype : StringInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-string.prototype.split
     /// </summary>
-    private JsValue Split(JsValue thisObject, JsValue[] arguments)
+    private JsValue Split(JsValue thisObject, JsCallArguments arguments)
     {
-        TypeConverter.CheckObjectCoercible(Engine, thisObject);
+        TypeConverter.RequireObjectCoercible(Engine, thisObject);
 
         var separator = arguments.At(0);
         var limit = arguments.At(1);
@@ -393,7 +511,7 @@ internal sealed class StringPrototype : StringInstance
             var splitter = GetMethod(_realm, oi, GlobalSymbolRegistry.Split);
             if (splitter != null)
             {
-                return splitter.Call(separator, new[] { thisObject, limit });
+                return splitter.Call(separator, thisObject, limit);
             }
         }
 
@@ -468,9 +586,9 @@ internal sealed class StringPrototype : StringInstance
     /// <summary>
     /// https://tc39.es/proposal-relative-indexing-method/#sec-string-prototype-additions
     /// </summary>
-    private JsValue At(JsValue thisObject, JsValue[] arguments)
+    private JsValue At(JsValue thisObject, JsCallArguments arguments)
     {
-        TypeConverter.CheckObjectCoercible(_engine, thisObject);
+        TypeConverter.RequireObjectCoercible(_engine, thisObject);
         var start = arguments.At(0);
 
         var o = thisObject.ToString();
@@ -496,9 +614,9 @@ internal sealed class StringPrototype : StringInstance
         return o[k];
     }
 
-    private JsValue Slice(JsValue thisObject, JsValue[] arguments)
+    private JsValue Slice(JsValue thisObject, JsCallArguments arguments)
     {
-        TypeConverter.CheckObjectCoercible(Engine, thisObject);
+        TypeConverter.RequireObjectCoercible(Engine, thisObject);
 
         var start = TypeConverter.ToNumber(arguments.At(0));
         if (double.IsNegativeInfinity(start))
@@ -537,9 +655,9 @@ internal sealed class StringPrototype : StringInstance
         return s.Substring(from, span);
     }
 
-    private JsValue Search(JsValue thisObject, JsValue[] arguments)
+    private JsValue Search(JsValue thisObject, JsCallArguments arguments)
     {
-        TypeConverter.CheckObjectCoercible(Engine, thisObject);
+        TypeConverter.RequireObjectCoercible(Engine, thisObject);
         var regex = arguments.At(0);
 
         if (regex is ObjectInstance oi)
@@ -547,26 +665,28 @@ internal sealed class StringPrototype : StringInstance
             var searcher = GetMethod(_realm, oi, GlobalSymbolRegistry.Search);
             if (searcher != null)
             {
-                return searcher.Call(regex, new[] { thisObject });
+                return searcher.Call(regex, thisObject);
             }
         }
 
-        var rx = (JsRegExp) _realm.Intrinsics.RegExp.Construct(new[] {regex});
+        var rx = (JsRegExp) _realm.Intrinsics.RegExp.Construct([regex]);
         var s = TypeConverter.ToJsString(thisObject);
-        return _engine.Invoke(rx, GlobalSymbolRegistry.Search, new JsValue[] { s });
+        return _engine.Invoke(rx, GlobalSymbolRegistry.Search, [s]);
     }
 
     /// <summary>
     /// https://tc39.es/ecma262/#sec-string.prototype.replace
     /// </summary>
-    private JsValue Replace(JsValue thisObject, JsValue[] arguments)
+    private JsValue Replace(JsValue thisObject, JsCallArguments arguments)
     {
-        TypeConverter.CheckObjectCoercible(Engine, thisObject);
+        TypeConverter.RequireObjectCoercible(Engine, thisObject);
 
         var searchValue = arguments.At(0);
         var replaceValue = arguments.At(1);
 
-        if (!searchValue.IsNullOrUndefined())
+        // 2. If searchValue is neither undefined nor null, then
+        // Note: spec requires checking if searchValue IS an object, not just not-null/undefined
+        if (searchValue is ObjectInstance)
         {
             var replacer = GetMethod(_realm, searchValue, GlobalSymbolRegistry.Replace);
             if (replacer != null)
@@ -599,7 +719,7 @@ internal sealed class StringPrototype : StringInstance
         else
         {
             var captures = System.Array.Empty<string>();
-            replStr =  RegExpPrototype.GetSubstitution(searchString, thisString.ToString(), position, captures, Undefined, TypeConverter.ToString(replaceValue));
+            replStr = RegExpPrototype.GetSubstitution(searchString, thisString.ToString(), position, captures, Undefined, TypeConverter.ToString(replaceValue));
         }
 
         var tailPos = position + searchString.Length;
@@ -611,22 +731,24 @@ internal sealed class StringPrototype : StringInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-string.prototype.replaceall
     /// </summary>
-    private JsValue ReplaceAll(JsValue thisObject, JsValue[] arguments)
+    private JsValue ReplaceAll(JsValue thisObject, JsCallArguments arguments)
     {
-        TypeConverter.CheckObjectCoercible(Engine, thisObject);
+        TypeConverter.RequireObjectCoercible(Engine, thisObject);
 
         var searchValue = arguments.At(0);
         var replaceValue = arguments.At(1);
 
-        if (!searchValue.IsNullOrUndefined())
+        // 2. If searchValue is neither undefined nor null, then
+        // Note: spec requires checking if searchValue IS an object, not just not-null/undefined
+        if (searchValue is ObjectInstance)
         {
             if (searchValue.IsRegExp())
             {
                 var flags = searchValue.Get(RegExpPrototype.PropertyFlags);
-                TypeConverter.CheckObjectCoercible(_engine, flags);
+                TypeConverter.RequireObjectCoercible(_engine, flags);
                 if (!TypeConverter.ToString(flags).Contains('g'))
                 {
-                    ExceptionHelper.ThrowTypeError(_realm, "String.prototype.replaceAll called with a non-global RegExp argument");
+                    Throw.TypeError(_realm, "String.prototype.replaceAll called with a non-global RegExp argument");
                 }
             }
 
@@ -687,7 +809,7 @@ internal sealed class StringPrototype : StringInstance
             else
             {
                 var captures = System.Array.Empty<string>();
-                replacement =  RegExpPrototype.GetSubstitution(searchString, thisString, position, captures, Undefined, TypeConverter.ToString(replaceValue));
+                replacement = RegExpPrototype.GetSubstitution(searchString, thisString, position, captures, Undefined, TypeConverter.ToString(replaceValue));
             }
 
             result.Append(preserved);
@@ -700,19 +822,15 @@ internal sealed class StringPrototype : StringInstance
 
         if (endOfLastMatch < thisString.Length)
         {
-#if NETFRAMEWORK
             result.Append(thisString.AsSpan(endOfLastMatch));
-#else
-                result.Append(thisString[endOfLastMatch..]);
-#endif
         }
 
         return result.ToString();
     }
 
-    private JsValue Match(JsValue thisObject, JsValue[] arguments)
+    private JsValue Match(JsValue thisObject, JsCallArguments arguments)
     {
-        TypeConverter.CheckObjectCoercible(Engine, thisObject);
+        TypeConverter.RequireObjectCoercible(Engine, thisObject);
 
         var regex = arguments.At(0);
         if (regex is ObjectInstance oi)
@@ -720,68 +838,71 @@ internal sealed class StringPrototype : StringInstance
             var matcher = GetMethod(_realm, oi, GlobalSymbolRegistry.Match);
             if (matcher != null)
             {
-                return matcher.Call(regex, new[] { thisObject });
+                return matcher.Call(regex, thisObject);
             }
         }
 
-        var rx = (JsRegExp) _realm.Intrinsics.RegExp.Construct(new[] {regex});
+        var rx = (JsRegExp) _realm.Intrinsics.RegExp.Construct([regex]);
 
         var s = TypeConverter.ToJsString(thisObject);
-        return _engine.Invoke(rx, GlobalSymbolRegistry.Match, new JsValue[] { s });
+        return _engine.Invoke(rx, GlobalSymbolRegistry.Match, [s]);
     }
 
-    private JsValue MatchAll(JsValue thisObject, JsValue[] arguments)
+    private JsValue MatchAll(JsValue thisObject, JsCallArguments arguments)
     {
-        TypeConverter.CheckObjectCoercible(_engine, thisObject);
+        TypeConverter.RequireObjectCoercible(_engine, thisObject);
 
         var regex = arguments.At(0);
-        if (!regex.IsNullOrUndefined())
+        // 2. If regexp is neither undefined nor null, then
+        // Note: spec requires checking if regexp IS an object, not just not-null/undefined
+        if (regex is ObjectInstance)
         {
             if (regex.IsRegExp())
             {
                 var flags = regex.Get(RegExpPrototype.PropertyFlags);
-                TypeConverter.CheckObjectCoercible(_engine, flags);
+                TypeConverter.RequireObjectCoercible(_engine, flags);
                 if (!TypeConverter.ToString(flags).Contains('g'))
                 {
-                    ExceptionHelper.ThrowTypeError(_realm);
+                    Throw.TypeError(_realm);
                 }
             }
-            var matcher = GetMethod(_realm, (ObjectInstance) regex, GlobalSymbolRegistry.MatchAll);
+            var matcher = GetMethod(_realm, regex, GlobalSymbolRegistry.MatchAll);
             if (matcher != null)
             {
-                return matcher.Call(regex, new[] { thisObject });
+                return matcher.Call(regex, thisObject);
             }
         }
 
         var s = TypeConverter.ToJsString(thisObject);
-        var rx = (JsRegExp) _realm.Intrinsics.RegExp.Construct(new[] { regex, "g" });
+        var rx = (JsRegExp) _realm.Intrinsics.RegExp.Construct([regex, "g"]);
 
-        return _engine.Invoke(rx, GlobalSymbolRegistry.MatchAll, new JsValue[] { s });
+        return _engine.Invoke(rx, GlobalSymbolRegistry.MatchAll, [s]);
     }
 
-    private JsValue LocaleCompare(JsValue thisObject, JsValue[] arguments)
+    /// <summary>
+    /// https://tc39.es/ecma262/#sec-string.prototype.localecompare
+    /// https://tc39.es/ecma402/#sup-string.prototype.localecompare
+    /// </summary>
+    private JsValue LocaleCompare(JsValue thisObject, JsCallArguments arguments)
     {
-        TypeConverter.CheckObjectCoercible(Engine, thisObject);
+        TypeConverter.RequireObjectCoercible(Engine, thisObject);
 
         var s = TypeConverter.ToString(thisObject);
         var that = TypeConverter.ToString(arguments.At(0));
+        var locales = arguments.At(1);
+        var options = arguments.At(2);
 
-        var culture = Engine.Options.Culture;
-
-        if (arguments.Length > 1 && arguments[1].IsString())
-        {
-            culture = CultureInfo.GetCultureInfo(arguments.At(1).AsString());
-        }
-
-        return culture.CompareInfo.Compare(s.Normalize(NormalizationForm.FormKD), that.Normalize(NormalizationForm.FormKD));
+        // Use Intl.Collator for locale-aware comparison
+        var collator = (JsCollator) Engine.Realm.Intrinsics.Collator.Construct([locales, options], Engine.Realm.Intrinsics.Collator);
+        return collator.Compare(s, that);
     }
 
     /// <summary>
     /// https://tc39.es/ecma262/#sec-string.prototype.lastindexof
     /// </summary>
-    private JsValue LastIndexOf(JsValue thisObject, JsValue[] arguments)
+    private JsValue LastIndexOf(JsValue thisObject, JsCallArguments arguments)
     {
-        TypeConverter.CheckObjectCoercible(Engine, thisObject);
+        TypeConverter.RequireObjectCoercible(Engine, thisObject);
 
         var jsString = TypeConverter.ToJsString(thisObject);
         var searchStr = TypeConverter.ToString(arguments.At(0));
@@ -794,7 +915,7 @@ internal sealed class StringPrototype : StringInstance
         var pos = double.IsNaN(numPos) ? double.PositiveInfinity : TypeConverter.ToInteger(numPos);
 
         var len = jsString.Length;
-        var start = (int)System.Math.Min(System.Math.Max(pos, 0), len);
+        var start = (int) System.Math.Min(System.Math.Max(pos, 0), len);
         var searchLen = searchStr.Length;
 
         if (searchLen > len)
@@ -835,9 +956,9 @@ internal sealed class StringPrototype : StringInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-string.prototype.indexof
     /// </summary>
-    private JsValue IndexOf(JsValue thisObject, JsValue[] arguments)
+    private JsValue IndexOf(JsValue thisObject, JsCallArguments arguments)
     {
-        TypeConverter.CheckObjectCoercible(Engine, thisObject);
+        TypeConverter.RequireObjectCoercible(Engine, thisObject);
 
         var s = TypeConverter.ToJsString(thisObject);
         var searchStr = TypeConverter.ToString(arguments.At(0));
@@ -860,9 +981,9 @@ internal sealed class StringPrototype : StringInstance
         return s.IndexOf(searchStr, (int) pos);
     }
 
-    private JsValue Concat(JsValue thisObject, JsValue[] arguments)
+    private JsValue Concat(JsValue thisObject, JsCallArguments arguments)
     {
-        TypeConverter.CheckObjectCoercible(Engine, thisObject);
+        TypeConverter.RequireObjectCoercible(Engine, thisObject);
 
         if (thisObject is not JsString jsString)
         {
@@ -881,9 +1002,9 @@ internal sealed class StringPrototype : StringInstance
         return jsString;
     }
 
-    private JsValue CharCodeAt(JsValue thisObject, JsValue[] arguments)
+    private JsValue CharCodeAt(JsValue thisObject, JsCallArguments arguments)
     {
-        TypeConverter.CheckObjectCoercible(Engine, thisObject);
+        TypeConverter.RequireObjectCoercible(Engine, thisObject);
 
         JsValue pos = arguments.Length > 0 ? arguments[0] : 0;
         var s = TypeConverter.ToJsString(thisObject);
@@ -898,13 +1019,13 @@ internal sealed class StringPrototype : StringInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-string.prototype.codepointat
     /// </summary>
-    private JsValue CodePointAt(JsValue thisObject, JsValue[] arguments)
+    private JsValue CodePointAt(JsValue thisObject, JsCallArguments arguments)
     {
-        TypeConverter.CheckObjectCoercible(Engine, thisObject);
+        TypeConverter.RequireObjectCoercible(Engine, thisObject);
 
         JsValue pos = arguments.Length > 0 ? arguments[0] : 0;
         var s = TypeConverter.ToString(thisObject);
-        var position = (int)TypeConverter.ToInteger(pos);
+        var position = (int) TypeConverter.ToInteger(pos);
         if (position < 0 || position >= s.Length)
         {
             return Undefined;
@@ -943,9 +1064,9 @@ internal sealed class StringPrototype : StringInstance
         return new CodePointResult(char.ConvertToUtf32(first, second), 2, false);
     }
 
-    private JsValue CharAt(JsValue thisObject, JsValue[] arguments)
+    private JsValue CharAt(JsValue thisObject, JsCallArguments arguments)
     {
-        TypeConverter.CheckObjectCoercible(Engine, thisObject);
+        TypeConverter.RequireObjectCoercible(Engine, thisObject);
         var s = TypeConverter.ToJsString(thisObject);
         var position = TypeConverter.ToInteger(arguments.At(0));
         var size = s.Length;
@@ -956,7 +1077,7 @@ internal sealed class StringPrototype : StringInstance
         return JsString.Create(s[(int) position]);
     }
 
-    private JsValue ValueOf(JsValue thisObject, JsValue[] arguments)
+    private JsValue ValueOf(JsValue thisObject, JsCallArguments arguments)
     {
         if (thisObject is StringInstance si)
         {
@@ -968,14 +1089,14 @@ internal sealed class StringPrototype : StringInstance
             return thisObject;
         }
 
-        ExceptionHelper.ThrowTypeError(_realm);
+        Throw.TypeError(_realm);
         return Undefined;
     }
 
     /// <summary>
     /// https://tc39.es/ecma262/#sec-string.prototype.padstart
     /// </summary>
-    private JsValue PadStart(JsValue thisObject, JsValue[] arguments)
+    private JsValue PadStart(JsValue thisObject, JsCallArguments arguments)
     {
         return StringPad(thisObject, arguments, true);
     }
@@ -983,7 +1104,7 @@ internal sealed class StringPrototype : StringInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-string.prototype.padend
     /// </summary>
-    private JsValue PadEnd(JsValue thisObject, JsValue[] arguments)
+    private JsValue PadEnd(JsValue thisObject, JsCallArguments arguments)
     {
         return StringPad(thisObject, arguments, false);
     }
@@ -991,9 +1112,9 @@ internal sealed class StringPrototype : StringInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-stringpad
     /// </summary>
-    private JsValue StringPad(JsValue thisObject, JsValue[] arguments, bool padStart)
+    private JsValue StringPad(JsValue thisObject, JsCallArguments arguments, bool padStart)
     {
-        TypeConverter.CheckObjectCoercible(Engine, thisObject);
+        TypeConverter.RequireObjectCoercible(Engine, thisObject);
         var s = TypeConverter.ToJsString(thisObject);
 
         var targetLength = TypeConverter.ToInt32(arguments.At(0));
@@ -1022,9 +1143,9 @@ internal sealed class StringPrototype : StringInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-string.prototype.startswith
     /// </summary>
-    private JsValue StartsWith(JsValue thisObject, JsValue[] arguments)
+    private JsValue StartsWith(JsValue thisObject, JsCallArguments arguments)
     {
-        TypeConverter.CheckObjectCoercible(Engine, thisObject);
+        TypeConverter.RequireObjectCoercible(Engine, thisObject);
 
         var s = TypeConverter.ToJsString(thisObject);
 
@@ -1037,7 +1158,7 @@ internal sealed class StringPrototype : StringInstance
         {
             if (searchString.IsRegExp())
             {
-                ExceptionHelper.ThrowTypeError(_realm);
+                Throw.TypeError(_realm);
             }
         }
 
@@ -1054,9 +1175,9 @@ internal sealed class StringPrototype : StringInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-string.prototype.endswith
     /// </summary>
-    private JsValue EndsWith(JsValue thisObject, JsValue[] arguments)
+    private JsValue EndsWith(JsValue thisObject, JsCallArguments arguments)
     {
-        TypeConverter.CheckObjectCoercible(Engine, thisObject);
+        TypeConverter.RequireObjectCoercible(Engine, thisObject);
 
         var s = TypeConverter.ToJsString(thisObject);
 
@@ -1069,7 +1190,7 @@ internal sealed class StringPrototype : StringInstance
         {
             if (searchString.IsRegExp())
             {
-                ExceptionHelper.ThrowTypeError(_realm);
+                Throw.TypeError(_realm);
             }
         }
 
@@ -1085,16 +1206,16 @@ internal sealed class StringPrototype : StringInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-string.prototype.includes
     /// </summary>
-    private JsValue Includes(JsValue thisObject, JsValue[] arguments)
+    private JsValue Includes(JsValue thisObject, JsCallArguments arguments)
     {
-        TypeConverter.CheckObjectCoercible(Engine, thisObject);
+        TypeConverter.RequireObjectCoercible(Engine, thisObject);
 
         var s = TypeConverter.ToJsString(thisObject);
         var searchString = arguments.At(0);
 
         if (searchString.IsRegExp())
         {
-            ExceptionHelper.ThrowTypeError(_realm, "First argument to String.prototype.includes must not be a regular expression");
+            Throw.TypeError(_realm, "First argument to String.prototype.includes must not be a regular expression");
         }
 
         var searchStr = TypeConverter.ToString(searchString);
@@ -1117,9 +1238,9 @@ internal sealed class StringPrototype : StringInstance
         return s.IndexOf(searchStr, (int) pos) > -1;
     }
 
-    private JsValue Normalize(JsValue thisObject, JsValue[] arguments)
+    private JsValue Normalize(JsValue thisObject, JsCallArguments arguments)
     {
-        TypeConverter.CheckObjectCoercible(Engine, thisObject);
+        TypeConverter.RequireObjectCoercible(Engine, thisObject);
         var str = TypeConverter.ToString(thisObject);
 
         var param = arguments.At(0);
@@ -1146,7 +1267,7 @@ internal sealed class StringPrototype : StringInstance
                 nf = NormalizationForm.FormKD;
                 break;
             default:
-                ExceptionHelper.ThrowRangeError(
+                Throw.RangeError(
                     _realm,
                     "The normalization form should be one of NFC, NFD, NFKC, NFKD.");
                 break;
@@ -1158,9 +1279,9 @@ internal sealed class StringPrototype : StringInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-string.prototype.repeat
     /// </summary>
-    private JsValue Repeat(JsValue thisObject, JsValue[] arguments)
+    private JsValue Repeat(JsValue thisObject, JsCallArguments arguments)
     {
-        TypeConverter.CheckObjectCoercible(Engine, thisObject);
+        TypeConverter.RequireObjectCoercible(Engine, thisObject);
         var s = TypeConverter.ToString(thisObject);
         var count = arguments.At(0);
 
@@ -1168,7 +1289,7 @@ internal sealed class StringPrototype : StringInstance
 
         if (n < 0 || double.IsPositiveInfinity(n))
         {
-            ExceptionHelper.ThrowRangeError(_realm, "Invalid count value");
+            Throw.RangeError(_realm, "Invalid count value");
         }
 
         if (n == 0 || s.Length == 0)
@@ -1190,17 +1311,17 @@ internal sealed class StringPrototype : StringInstance
         return sb.ToString();
     }
 
-    private JsValue IsWellFormed(JsValue thisObject, JsValue[] arguments)
+    private JsValue IsWellFormed(JsValue thisObject, JsCallArguments arguments)
     {
-        TypeConverter.CheckObjectCoercible(_engine, thisObject);
+        TypeConverter.RequireObjectCoercible(_engine, thisObject);
         var s = TypeConverter.ToString(thisObject);
 
         return IsStringWellFormedUnicode(s);
     }
 
-    private JsValue ToWellFormed(JsValue thisObject, JsValue[] arguments)
+    private JsValue ToWellFormed(JsValue thisObject, JsCallArguments arguments)
     {
-        TypeConverter.CheckObjectCoercible(_engine, thisObject);
+        TypeConverter.RequireObjectCoercible(_engine, thisObject);
         var s = TypeConverter.ToString(thisObject);
 
         var strLen = s.Length;

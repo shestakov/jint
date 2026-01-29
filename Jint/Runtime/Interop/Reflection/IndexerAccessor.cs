@@ -88,7 +88,7 @@ internal sealed class IndexerAccessor : ReflectionAccessor
                 indexerAccessor = ComposeIndexerFactory(engine, targetType, candidate, paramType, propertyName, integerKey, paramTypeArray);
                 if (indexerAccessor != null)
                 {
-                    if (paramType != typeof(string) ||  integerKey is null)
+                    if (paramType != typeof(string) || integerKey is null)
                     {
                         // exact match, we don't need to check for integer key
                         indexer = candidate;
@@ -181,7 +181,7 @@ internal sealed class IndexerAccessor : ReflectionAccessor
     {
         if (_getter is null)
         {
-            ExceptionHelper.ThrowInvalidOperationException("Indexer has no public getter.");
+            Throw.InvalidOperationException("Indexer has no public getter.");
             return null;
         }
 
@@ -209,10 +209,10 @@ internal sealed class IndexerAccessor : ReflectionAccessor
     {
         if (_setter is null)
         {
-            ExceptionHelper.ThrowInvalidOperationException("Indexer has no public setter.");
+            Throw.InvalidOperationException("Indexer has no public setter.");
         }
 
-        object?[] parameters = { _key, value };
+        object?[] parameters = [_key, value];
         _setter.Invoke(target, parameters);
     }
 

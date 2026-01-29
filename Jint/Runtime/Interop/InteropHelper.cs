@@ -91,6 +91,25 @@ internal sealed class InteropHelper
     private static int CalculateMethodParameterScore(Engine engine, ParameterInfo parameter, JsValue parameterValue)
     {
         var paramType = parameter.ParameterType;
+
+        // Special case: if parameter expects a JsValue-derived type (e.g., TypeReference),
+        // check if the argument is of that exact type before calling ToObject().
+        // This is important because ToObject() unwraps TypeReference to System.Type,
+        // losing the original wrapper type information needed for overload resolution.
+        if (typeof(JsValue).IsAssignableFrom(paramType))
+        {
+            var jsValueType = parameterValue.GetType();
+            if (jsValueType == paramType)
+            {
+                return 0; // Exact match
+            }
+
+            if (paramType.IsAssignableFrom(jsValueType))
+            {
+                return 1; // Is-a relationship
+            }
+        }
+
         var objectValue = parameterValue.ToObject();
 
         if (objectValue is null)
@@ -133,14 +152,59 @@ internal sealed class InteropHelper
             return 5;
         }
 
-        if (paramType == typeof(int) && parameterValue.IsInteger())
+        const int ScoreForDifferentTypeButFittingNumberRange = 2;
+        if (parameterValue.IsNumber())
         {
-            return 0;
-        }
+            var num = (JsNumber) parameterValue;
+            var numValue = num._value;
 
-        if (paramType == typeof(float) && objectValueType == typeof(double))
-        {
-            return parameterValue.IsInteger() ? 1 : 2;
+            if (paramType == typeof(double))
+            {
+                return 0;
+            }
+
+            if (paramType == typeof(float) && numValue is <= float.MaxValue and >= float.MinValue)
+            {
+                return ScoreForDifferentTypeButFittingNumberRange;
+            }
+
+            var isInteger = num.IsInteger() || TypeConverter.IsIntegralNumber(num._value);
+
+            // if value is integral number and within allowed range for the parameter type, we consider this perfect match
+            if (isInteger)
+            {
+                if (paramType == typeof(int))
+                {
+                    return 0;
+                }
+
+                if (paramType == typeof(long))
+                {
+                    return ScoreForDifferentTypeButFittingNumberRange;
+                }
+
+                // check if we can narrow without exception throwing versions (CanChangeType)
+                var integerValue = (int) num._value;
+                if (paramType == typeof(short) && integerValue is <= short.MaxValue and >= short.MinValue)
+                {
+                    return ScoreForDifferentTypeButFittingNumberRange;
+                }
+
+                if (paramType == typeof(ushort) && integerValue is <= ushort.MaxValue and >= ushort.MinValue)
+                {
+                    return ScoreForDifferentTypeButFittingNumberRange;
+                }
+
+                if (paramType == typeof(byte) && integerValue is <= byte.MaxValue and >= byte.MinValue)
+                {
+                    return ScoreForDifferentTypeButFittingNumberRange;
+                }
+
+                if (paramType == typeof(sbyte) && integerValue is <= sbyte.MaxValue and >= sbyte.MinValue)
+                {
+                    return ScoreForDifferentTypeButFittingNumberRange;
+                }
+            }
         }
 
         if (paramType.IsEnum &&
@@ -260,21 +324,22 @@ internal sealed class InteropHelper
     }
 
 
-    internal readonly record struct MethodMatch(MethodDescriptor Method, JsValue[] Arguments, int Score = 0) : IComparable<MethodMatch>
+    internal readonly record struct MethodMatch(MethodDescriptor Method, JsCallArguments Arguments, int Score = 0) : IComparable<MethodMatch>
     {
         public int CompareTo(MethodMatch other) => Score.CompareTo(other.Score);
     }
 
-    internal static IEnumerable<MethodMatch> FindBestMatch(
+    internal static IEnumerable<MethodMatch> FindBestMatch<TState>(
         Engine engine,
         MethodDescriptor[] methods,
-        Func<MethodDescriptor, JsValue[]> argumentProvider)
+        Func<MethodDescriptor, TState, JsValue[]> argumentProvider,
+        TState state)
     {
         List<MethodMatch>? matchingByParameterCount = null;
         foreach (var method in methods)
         {
             var parameterInfos = method.Parameters;
-            var arguments = argumentProvider(method);
+            var arguments = argumentProvider(method, state);
             if (arguments.Length <= parameterInfos.Length
                 && arguments.Length >= parameterInfos.Length - method.ParameterDefaultValuesCount)
             {

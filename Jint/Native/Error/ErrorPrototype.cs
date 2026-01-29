@@ -1,4 +1,3 @@
-using Jint.Collections;
 using Jint.Native.Object;
 using Jint.Runtime;
 using Jint.Runtime.Descriptors;
@@ -41,12 +40,12 @@ internal sealed class ErrorPrototype : ErrorInstance
         SetProperties(properties);
     }
 
-    public JsValue ToString(JsValue thisObject, JsValue[] arguments)
+    public JsValue ToString(JsValue thisObject, JsCallArguments arguments)
     {
         var o = thisObject.TryCast<ObjectInstance>();
         if (o is null)
         {
-            ExceptionHelper.ThrowTypeError(_realm);
+            Throw.TypeError(_realm);
         }
 
         var nameProp = o.Get("name", this);

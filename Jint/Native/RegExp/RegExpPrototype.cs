@@ -2,7 +2,6 @@
 
 using System.Text;
 using System.Text.RegularExpressions;
-using Jint.Collections;
 using Jint.Native.Number;
 using Jint.Native.Object;
 using Jint.Native.String;
@@ -31,7 +30,7 @@ internal sealed class RegExpPrototype : Prototype
     private static readonly JsString PropertyUnicodeSets = new("unicodeSets");
 
     private readonly RegExpConstructor _constructor;
-    private readonly Func<JsValue, JsValue[], JsValue> _defaultExec;
+    private readonly JsCallDelegate _defaultExec;
 
     internal RegExpPrototype(
         Engine engine,
@@ -61,7 +60,7 @@ internal sealed class RegExpPrototype : Prototype
                     var r = thisObj as JsRegExp;
                     if (r is null)
                     {
-                        ExceptionHelper.ThrowTypeError(_realm);
+                        Throw.TypeError(_realm);
                     }
 
                     return valueExtractor(r);
@@ -104,7 +103,7 @@ internal sealed class RegExpPrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-get-regexp.prototype.source
     /// </summary>
-    private JsValue Source(JsValue thisObject, JsValue[] arguments)
+    private JsValue Source(JsValue thisObject, JsCallArguments arguments)
     {
         if (ReferenceEquals(thisObject, this))
         {
@@ -114,7 +113,7 @@ internal sealed class RegExpPrototype : Prototype
         var r = thisObject as JsRegExp;
         if (r is null)
         {
-            ExceptionHelper.ThrowTypeError(_realm);
+            Throw.TypeError(_realm);
         }
 
         if (string.IsNullOrEmpty(r.Source))
@@ -132,7 +131,7 @@ internal sealed class RegExpPrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-regexp.prototype-@@replace
     /// </summary>
-    private JsValue Replace(JsValue thisObject, JsValue[] arguments)
+    private JsValue Replace(JsValue thisObject, JsCallArguments arguments)
     {
         var rx = AssertThisIsObjectInstance(thisObject, "RegExp.prototype.replace");
         var s = TypeConverter.ToString(arguments.At(0));
@@ -438,7 +437,7 @@ internal sealed class RegExpPrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-regexp.prototype-@@split
     /// </summary>
-    private JsValue Split(JsValue thisObject, JsValue[] arguments)
+    private JsValue Split(JsValue thisObject, JsCallArguments arguments)
     {
         var rx = AssertThisIsObjectInstance(thisObject, "RegExp.prototype.split");
         var s = TypeConverter.ToString(arguments.At(0));
@@ -447,11 +446,10 @@ internal sealed class RegExpPrototype : Prototype
         var flags = TypeConverter.ToJsString(rx.Get(PropertyFlags));
         var unicodeMatching = flags.Contains('u');
         var newFlags = flags.Contains('y') ? flags : new JsString(flags.ToString() + 'y');
-        var splitter = Construct(c, new JsValue[]
-        {
+        var splitter = Construct(c, [
             rx,
             newFlags
-        });
+        ]);
         uint lengthA = 0;
         var lim = limit.IsUndefined() ? NumberConstructor.MaxSafeInteger : TypeConverter.ToUint32(limit);
 
@@ -585,7 +583,7 @@ internal sealed class RegExpPrototype : Prototype
         return a;
     }
 
-    private JsValue Flags(JsValue thisObject, JsValue[] arguments)
+    private JsValue Flags(JsValue thisObject, JsCallArguments arguments)
     {
         var r = AssertThisIsObjectInstance(thisObject, "RegExp.prototype.flags");
 
@@ -606,7 +604,7 @@ internal sealed class RegExpPrototype : Prototype
         return result;
     }
 
-    private JsValue ToRegExpString(JsValue thisObject, JsValue[] arguments)
+    private JsValue ToRegExpString(JsValue thisObject, JsCallArguments arguments)
     {
         var r = AssertThisIsObjectInstance(thisObject, "RegExp.prototype.toString");
 
@@ -616,7 +614,7 @@ internal sealed class RegExpPrototype : Prototype
         return "/" + pattern + "/" + flags;
     }
 
-    private JsValue Test(JsValue thisObject, JsValue[] arguments)
+    private JsValue Test(JsValue thisObject, JsCallArguments arguments)
     {
         var r = AssertThisIsObjectInstance(thisObject, "RegExp.prototype.test");
         var s = TypeConverter.ToString(arguments.At(0));
@@ -653,7 +651,7 @@ internal sealed class RegExpPrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-regexp.prototype-@@search
     /// </summary>
-    private JsValue Search(JsValue thisObject, JsValue[] arguments)
+    private JsValue Search(JsValue thisObject, JsCallArguments arguments)
     {
         var rx = AssertThisIsObjectInstance(thisObject, "RegExp.prototype.search");
 
@@ -682,7 +680,7 @@ internal sealed class RegExpPrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-regexp.prototype-@@match
     /// </summary>
-    private JsValue Match(JsValue thisObject, JsValue[] arguments)
+    private JsValue Match(JsValue thisObject, JsCallArguments arguments)
     {
         var rx = AssertThisIsObjectInstance(thisObject, "RegExp.prototype.match");
 
@@ -774,7 +772,7 @@ internal sealed class RegExpPrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-regexp-prototype-matchall
     /// </summary>
-    private JsValue MatchAll(JsValue thisObject, JsValue[] arguments)
+    private JsValue MatchAll(JsValue thisObject, JsCallArguments arguments)
     {
         var r = AssertThisIsObjectInstance(thisObject, "RegExp.prototype.matchAll");
 
@@ -782,11 +780,10 @@ internal sealed class RegExpPrototype : Prototype
         var c = SpeciesConstructor(r, _realm.Intrinsics.RegExp);
 
         var flags = TypeConverter.ToJsString(r.Get(PropertyFlags));
-        var matcher = Construct(c, new JsValue[]
-        {
+        var matcher = Construct(c, [
             r,
             flags
-        });
+        ]);
 
         var lastIndex = TypeConverter.ToLength(r.Get(JsRegExp.PropertyLastIndex));
         matcher.Set(JsRegExp.PropertyLastIndex, lastIndex, true);
@@ -825,10 +822,10 @@ internal sealed class RegExpPrototype : Prototype
 
         if ((ri is null || !ri.HasDefaultRegExpExec) && r.Get(PropertyExec) is ICallable callable)
         {
-            var result = callable.Call(r, new JsValue[] { s });
+            var result = callable.Call(r, s);
             if (!result.IsNull() && !result.IsObject())
             {
-                ExceptionHelper.ThrowTypeError(r.Engine.Realm);
+                Throw.TypeError(r.Engine.Realm);
             }
 
             return result;
@@ -836,7 +833,7 @@ internal sealed class RegExpPrototype : Prototype
 
         if (ri is null)
         {
-            ExceptionHelper.ThrowTypeError(r.Engine.Realm);
+            Throw.TypeError(r.Engine.Realm);
         }
 
         return RegExpBuiltinExec(ri, s);
@@ -970,7 +967,7 @@ internal sealed class RegExpPrototype : Prototype
             {
                 if (capture?.Success == true)
                 {
-                    indices!.Add(new[] { JsNumber.Create(capture.Index), JsNumber.Create(capture.Index + capture.Length) });
+                    indices!.Add([JsNumber.Create(capture.Index), JsNumber.Create(capture.Index + capture.Length)]);
                 }
                 else
                 {
@@ -983,7 +980,7 @@ internal sealed class RegExpPrototype : Prototype
             {
                 groups ??= OrdinaryObjectCreate(engine, null);
                 groups.CreateDataPropertyOrThrow(groupName, capturedValue);
-                groupNames ??= new List<string>();
+                groupNames ??= [];
                 groupNames.Add(groupName!);
             }
 
@@ -1072,12 +1069,12 @@ internal sealed class RegExpPrototype : Prototype
         return groupNameFromNumber;
     }
 
-    private JsValue Exec(JsValue thisObject, JsValue[] arguments)
+    private JsValue Exec(JsValue thisObject, JsCallArguments arguments)
     {
         var r = thisObject as JsRegExp;
         if (r is null)
         {
-            ExceptionHelper.ThrowTypeError(_engine.Realm);
+            Throw.TypeError(_engine.Realm);
         }
 
         var s = TypeConverter.ToString(arguments.At(0));

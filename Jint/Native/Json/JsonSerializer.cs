@@ -184,7 +184,7 @@ public sealed class JsonSerializer
 
             if (value.IsInteger())
             {
-                json.Append(((long) doubleValue).ToString(CultureInfo.InvariantCulture));
+                json.Append((long) doubleValue);
                 return SerializeResult.NotUndefined;
             }
 
@@ -193,7 +193,7 @@ public sealed class JsonSerializer
             {
                 if (TypeConverter.CanBeStringifiedAsLong(doubleValue))
                 {
-                    json.Append(((long) doubleValue).ToString(CultureInfo.InvariantCulture));
+                    json.Append((long) doubleValue);
                     return SerializeResult.NotUndefined;
                 }
 
@@ -207,11 +207,18 @@ public sealed class JsonSerializer
 
         if (value.IsBigInt())
         {
-            ExceptionHelper.ThrowTypeError(_engine.Realm, "Do not know how to serialize a BigInt");
+            Throw.TypeError(_engine.Realm, "Do not know how to serialize a BigInt");
         }
 
         if (value is ObjectInstance { IsCallable: false } objectInstance)
         {
+            // Handle RawJSON objects - output rawJSON property directly
+            if (objectInstance is JsRawJson rawJson)
+            {
+                json.Append(rawJson.RawJson);
+                return SerializeResult.NotUndefined;
+            }
+
             if (CanSerializesAsArray(objectInstance))
             {
                 SerializeJSONArray(objectInstance, ref json);
@@ -221,7 +228,7 @@ public sealed class JsonSerializer
             if (objectInstance is IObjectWrapper wrapper
                 && _engine.Options.Interop.SerializeToJson is { } serialize)
             {
-                json.Append(serialize(wrapper.Target));
+                json.Append(serialize(wrapper.Target, _gap, _indent));
                 return SerializeResult.NotUndefined;
             }
 
@@ -254,7 +261,7 @@ public sealed class JsonSerializer
             {
                 if (toJson.AsObject() is ICallable callableToJson)
                 {
-                    value = callableToJson.Call(value, Arguments.From(TypeConverter.ToPropertyKey(key)));
+                    value = callableToJson.Call(value, TypeConverter.ToPropertyKey(key));
                 }
             }
         }
@@ -262,7 +269,7 @@ public sealed class JsonSerializer
         if (!_replacerFunction.IsUndefined())
         {
             var replacerFunctionCallable = (ICallable) _replacerFunction.AsObject();
-            value = replacerFunctionCallable.Call(holder, Arguments.From(TypeConverter.ToPropertyKey(key), value));
+            value = replacerFunctionCallable.Call(holder, TypeConverter.ToPropertyKey(key), value);
         }
 
         if (value.IsObject())
@@ -318,37 +325,37 @@ public sealed class JsonSerializer
         json.Append('"');
 
 #if NETCOREAPP1_0_OR_GREATER
-            fixed (char* ptr = value)
+        fixed (char* ptr = value)
+        {
+            int remainingLength = value.Length;
+            int offset = 0;
+            while (true)
             {
-                int remainingLength = value.Length;
-                int offset = 0;
-                while (true)
+                int index = System.Text.Encodings.Web.JavaScriptEncoder.Default.FindFirstCharacterToEncode(ptr + offset, remainingLength);
+                if (index < 0)
                 {
-                    int index = System.Text.Encodings.Web.JavaScriptEncoder.Default.FindFirstCharacterToEncode(ptr + offset, remainingLength);
-                    if (index < 0)
-                    {
-                        // append the remaining text which doesn't need any encoding.
-                        json.Append(value.AsSpan(offset));
-                        break;
-                    }
+                    // append the remaining text which doesn't need any encoding.
+                    json.Append(value.AsSpan(offset));
+                    break;
+                }
 
-                    index += offset;
-                    if (index - offset > 0)
-                    {
-                        // append everything which does not need any encoding until the found index.
-                        json.Append(value.AsSpan(offset, index - offset));
-                    }
+                index += offset;
+                if (index - offset > 0)
+                {
+                    // append everything which does not need any encoding until the found index.
+                    json.Append(value.AsSpan(offset, index - offset));
+                }
 
-                    AppendJsonStringCharacter(value, ref index, ref json);
+                AppendJsonStringCharacter(value, ref index, ref json);
 
-                    offset = index + 1;
-                    remainingLength = value.Length - offset;
-                    if (remainingLength == 0)
-                    {
-                        break;
-                    }
+                offset = index + 1;
+                remainingLength = value.Length - offset;
+                if (remainingLength == 0)
+                {
+                    break;
                 }
             }
+        }
 #else
         for (var i = 0; i < value.Length; i++)
         {
@@ -389,8 +396,8 @@ public sealed class JsonSerializer
                 if (char.IsSurrogatePair(value, index))
                 {
 #if NETCOREAPP1_0_OR_GREATER
-                        json.Append(value.AsSpan(index, 2));
-                        index++;
+                    json.Append(value.AsSpan(index, 2));
+                    index++;
 #else
                     json.Append(c);
                     index++;
@@ -558,7 +565,7 @@ public sealed class JsonSerializer
     private enum SerializeResult
     {
         NotUndefined,
-        Undefined
+        Undefined,
     }
 
     private readonly struct PropertyEnumeration

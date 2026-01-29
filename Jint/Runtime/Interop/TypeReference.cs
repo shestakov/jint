@@ -1,7 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
-using Jint.Collections;
 using Jint.Native;
 using Jint.Native.Object;
 using Jint.Native.Symbol;
@@ -27,11 +26,9 @@ public sealed class TypeReference : Constructor, IObjectWrapper
     {
         ReferenceType = type;
 
-        _prototype = engine.Realm.Intrinsics.Function.PrototypeObject;
+        _prototype = new TypeReferencePrototype(engine, this);
+        _prototypeDescriptor = new PropertyDescriptor(_prototype, PropertyFlag.AllForbidden);
         _length = PropertyDescriptor.AllForbiddenDescriptor.NumberZero;
-
-        var proto = new TypeReferencePrototype(engine, this);
-        _prototypeDescriptor = new PropertyDescriptor(proto, PropertyFlag.AllForbidden);
 
         PreventExtensions();
     }
@@ -53,13 +50,15 @@ public sealed class TypeReference : Constructor, IObjectWrapper
         return reference;
     }
 
-    protected internal override JsValue Call(JsValue thisObject, JsValue[] arguments)
+    protected internal override JsValue Call(JsValue thisObject, JsCallArguments arguments)
     {
         // direct calls on a TypeReference constructor object is equivalent to the new operator
         return Construct(arguments, Undefined);
     }
 
-    public override ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
+    private readonly record struct MethodResolverState(Engine Engine, JsCallArguments Arguments);
+
+    public override ObjectInstance Construct(JsCallArguments arguments, JsValue newTarget)
     {
         static ObjectInstance ObjectCreator(Engine engine, Realm realm, ObjectCreateState state)
         {
@@ -81,10 +80,17 @@ public sealed class TypeReference : Constructor, IObjectWrapper
             {
                 var constructors = _constructorCache.GetOrAdd(
                     referenceType,
-                    t => MethodDescriptor.Build(t.GetConstructors(BindingFlags.Public | BindingFlags.Instance)));
+                    t =>
+                    {
+                        List<ConstructorInfo> constructors = [.. t.GetConstructors(BindingFlags.Public | BindingFlags.Instance)];
+                        constructors.RemoveAll(x => !engine.Options.Interop.TypeResolver.MemberFilter(x));
+                        return MethodDescriptor.Build(constructors);
+                    });
 
-                var argumentProvider = new Func<MethodDescriptor, JsValue[]>(method =>
+                Func<MethodDescriptor, MethodResolverState, JsCallArguments> argumentProvider = static (method, state) =>
                 {
+                    var engine = state.Engine;
+                    var arguments = state.Arguments;
                     var parameters = method.Parameters;
 
                     if (parameters.Length == 0)
@@ -95,7 +101,7 @@ public sealed class TypeReference : Constructor, IObjectWrapper
                     var newArguments = new JsValue[parameters.Length];
                     var currentParameter = parameters[parameters.Length - 1];
                     var isParamArray = currentParameter.ParameterType.IsArray &&
-                                       currentParameter.GetCustomAttribute(typeof(ParamArrayAttribute)) is not null;
+                                       currentParameter.GetCustomAttribute<ParamArrayAttribute>() is not null;
 
                     // last parameter is a ParamArray
                     if (isParamArray && arguments.Length >= parameters.Length - 1)
@@ -144,8 +150,7 @@ public sealed class TypeReference : Constructor, IObjectWrapper
                     if (parameters.Length > arguments.Length)
                     {
                         // all missing ones must be optional
-                        int start = parameters.Length - arguments.Length;
-                        for (var i = start; i < parameters.Length; i++)
+                        for (var i = arguments.Length; i < parameters.Length; i++)
                         {
                             if (!parameters[i].IsOptional)
                             {
@@ -178,9 +183,10 @@ public sealed class TypeReference : Constructor, IObjectWrapper
                     }
 
                     return arguments;
-                });
+                };
 
-                foreach (var (method, methodArguments, _) in InteropHelper.FindBestMatch(engine, constructors, argumentProvider))
+                var resolverState = new MethodResolverState(engine, arguments);
+                foreach (var (method, methodArguments, _) in InteropHelper.FindBestMatch(engine, constructors, argumentProvider, resolverState))
                 {
                     var retVal = method.Call(engine, null, methodArguments);
                     result = TypeConverter.ToObject(realm, retVal);
@@ -192,7 +198,7 @@ public sealed class TypeReference : Constructor, IObjectWrapper
 
             if (result is null)
             {
-                ExceptionHelper.ThrowTypeError(realm, $"Could not resolve a constructor for type {referenceType} for given arguments");
+                Throw.TypeError(realm, $"Could not resolve a constructor for type {referenceType} for given arguments");
             }
 
             result.SetPrototypeOf(state.TypeReference);
@@ -210,7 +216,7 @@ public sealed class TypeReference : Constructor, IObjectWrapper
         return thisArgument;
     }
 
-    private readonly record struct ObjectCreateState(TypeReference TypeReference, JsValue[] Arguments);
+    private readonly record struct ObjectCreateState(TypeReference TypeReference, JsCallArguments Arguments);
 
     public override bool Equals(JsValue? other)
     {
@@ -311,7 +317,7 @@ public sealed class TypeReference : Constructor, IObjectWrapper
             var memberNameComparer = typeResolver.MemberNameComparer;
             var typeResolverMemberNameCreator = typeResolver.MemberNameCreator;
 #if NET7_0_OR_GREATER
-                var enumValues = type.GetEnumValuesAsUnderlyingType();
+            var enumValues = type.GetEnumValuesAsUnderlyingType();
 #else
             var enumValues = Enum.GetValues(type);
 #endif
@@ -342,7 +348,7 @@ public sealed class TypeReference : Constructor, IObjectWrapper
 
     public object Target => ReferenceType;
 
-    private static JsBoolean HasInstance(JsValue thisObject, JsValue[] arguments)
+    private static JsBoolean HasInstance(JsValue thisObject, JsCallArguments arguments)
     {
         var typeReference = thisObject as TypeReference;
         var other = arguments.At(0);

@@ -1,6 +1,5 @@
 #nullable disable
 
-using Jint.Collections;
 using Jint.Native;
 using Jint.Native.Array;
 using Jint.Native.Object;
@@ -170,7 +169,7 @@ internal sealed class ModuleNamespace : ObjectInstance
         var targetEnv = targetModule._environment;
         if (targetEnv is null)
         {
-            ExceptionHelper.ThrowReferenceError(_engine.Realm, "Module's environment hasn't been initialized");
+            Throw.ReferenceError(_engine.Realm, "Module's environment hasn't been initialized");
         }
 
         return targetEnv.GetBindingValue(binding.BindingName, true);

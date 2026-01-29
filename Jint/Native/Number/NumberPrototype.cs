@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
-using Jint.Collections;
 using Jint.Native.Number.Dtoa;
 using Jint.Native.Object;
 using Jint.Runtime;
@@ -50,63 +49,26 @@ internal sealed class NumberPrototype : NumberInstance
 
     /// <summary>
     /// https://tc39.es/ecma262/#sec-number.prototype.tolocalestring
+    /// https://tc39.es/ecma402/#sup-number.prototype.tolocalestring
     /// </summary>
-    private JsValue ToLocaleString(JsValue thisObject, JsValue[] arguments)
+    private JsValue ToLocaleString(JsValue thisObject, JsCallArguments arguments)
     {
         if (!thisObject.IsNumber() && thisObject is not NumberInstance)
         {
-            ExceptionHelper.ThrowTypeError(_realm);
+            Throw.TypeError(_realm);
         }
 
-        var m = TypeConverter.ToNumber(thisObject);
+        var x = TypeConverter.ToNumber(thisObject);
 
-        if (double.IsNaN(m))
-        {
-            return "NaN";
-        }
+        // Use Intl.NumberFormat if available
+        var locales = arguments.At(0);
+        var options = arguments.At(1);
 
-        if (m == 0)
-        {
-            return JsString.NumberZeroString;
-        }
-
-        if (m < 0)
-        {
-            return "-" + ToLocaleString(-m, arguments);
-        }
-
-        if (double.IsPositiveInfinity(m) || m >= double.MaxValue)
-        {
-            return "Infinity";
-        }
-
-        if (double.IsNegativeInfinity(m) || m <= -double.MaxValue)
-        {
-            return "-Infinity";
-        }
-
-        var numberFormat = (NumberFormatInfo) Engine.Options.Culture.NumberFormat.Clone();
-
-        try
-        {
-            if (arguments.Length > 0 && arguments[0].IsString())
-            {
-                var cultureArgument = arguments[0].ToString();
-                numberFormat = (NumberFormatInfo) CultureInfo.GetCultureInfo(cultureArgument).NumberFormat.Clone();
-            }
-
-            int decDigitCount = NumberIntlHelper.GetDecimalDigitCount(m);
-            numberFormat.NumberDecimalDigits = decDigitCount;
-        }
-        catch (CultureNotFoundException)
-        {
-            ExceptionHelper.ThrowRangeError(_realm, "Incorrect locale information provided");
-        }
-
-        return m.ToString("n", numberFormat);
+        var numberFormat = (Intl.JsNumberFormat) Engine.Realm.Intrinsics.NumberFormat.Construct([locales, options], Engine.Realm.Intrinsics.NumberFormat);
+        return numberFormat.Format(x);
     }
 
-    private JsValue ValueOf(JsValue thisObject, JsValue[] arguments)
+    private JsValue ValueOf(JsValue thisObject, JsCallArguments arguments)
     {
         if (thisObject is NumberInstance ni)
         {
@@ -118,24 +80,24 @@ internal sealed class NumberPrototype : NumberInstance
             return thisObject;
         }
 
-        ExceptionHelper.ThrowTypeError(_realm);
+        Throw.TypeError(_realm);
         return null;
     }
 
     private const double Ten21 = 1e21;
 
-    private JsValue ToFixed(JsValue thisObject, JsValue[] arguments)
+    private JsValue ToFixed(JsValue thisObject, JsCallArguments arguments)
     {
         var f = (int) TypeConverter.ToInteger(arguments.At(0, 0));
         if (f < 0 || f > 100)
         {
-            ExceptionHelper.ThrowRangeError(_realm, "fractionDigits argument must be between 0 and 100");
+            Throw.RangeError(_realm, "fractionDigits argument must be between 0 and 100");
         }
 
         // limitation with .NET, max is 99
         if (f == 100)
         {
-            ExceptionHelper.ThrowRangeError(_realm, "100 fraction digits is not supported due to .NET format specifier limitation");
+            Throw.RangeError(_realm, "100 fraction digits is not supported due to .NET format specifier limitation");
         }
 
         var x = TypeConverter.ToNumber(thisObject);
@@ -162,11 +124,11 @@ internal sealed class NumberPrototype : NumberInstance
     /// <summary>
     /// https://www.ecma-international.org/ecma-262/6.0/#sec-number.prototype.toexponential
     /// </summary>
-    private JsValue ToExponential(JsValue thisObject, JsValue[] arguments)
+    private JsValue ToExponential(JsValue thisObject, JsCallArguments arguments)
     {
         if (!thisObject.IsNumber() && ReferenceEquals(thisObject.TryCast<NumberInstance>(), null))
         {
-            ExceptionHelper.ThrowTypeError(_realm);
+            Throw.TypeError(_realm);
         }
 
         var x = TypeConverter.ToNumber(thisObject);
@@ -190,7 +152,7 @@ internal sealed class NumberPrototype : NumberInstance
 
         if (f < 0 || f > 100)
         {
-            ExceptionHelper.ThrowRangeError(_realm, "fractionDigits argument must be between 0 and 100");
+            Throw.RangeError(_realm, "fractionDigits argument must be between 0 and 100");
         }
 
         if (arguments.At(0).IsUndefined())
@@ -234,15 +196,15 @@ internal sealed class NumberPrototype : NumberInstance
         Debug.Assert(dtoaBuilder.Length <= f + 1);
 
         int exponent = decimalPoint - 1;
-        var result = CreateExponentialRepresentation(ref dtoaBuilder, exponent, negative, f+1);
+        var result = CreateExponentialRepresentation(ref dtoaBuilder, exponent, negative, f + 1);
         return result;
     }
 
-    private JsValue ToPrecision(JsValue thisObject, JsValue[] arguments)
+    private JsValue ToPrecision(JsValue thisObject, JsCallArguments arguments)
     {
         if (!thisObject.IsNumber() && ReferenceEquals(thisObject.TryCast<NumberInstance>(), null))
         {
-            ExceptionHelper.ThrowTypeError(_realm);
+            Throw.TypeError(_realm);
         }
 
         var x = TypeConverter.ToNumber(thisObject);
@@ -267,7 +229,7 @@ internal sealed class NumberPrototype : NumberInstance
 
         if (p < 1 || p > 100)
         {
-            ExceptionHelper.ThrowRangeError(_realm, "precision must be between 1 and 100");
+            Throw.RangeError(_realm, "precision must be between 1 and 100");
         }
 
         var dtoaBuilder = new DtoaBuilder(stackalloc char[LargeDtoaLength]);
@@ -325,7 +287,7 @@ internal sealed class NumberPrototype : NumberInstance
     }
 
     private static string CreateExponentialRepresentation(
-        ref  DtoaBuilder buffer,
+        ref DtoaBuilder buffer,
         int exponent,
         bool negative,
         int significantDigits)
@@ -353,16 +315,16 @@ internal sealed class NumberPrototype : NumberInstance
 
         sb.Append('e');
         sb.Append(negativeExponent ? '-' : '+');
-        sb.Append(exponent.ToString(CultureInfo.InvariantCulture));
+        sb.Append(exponent);
 
         return sb.ToString();
     }
 
-    private JsValue ToNumberString(JsValue thisObject, JsValue[] arguments)
+    private JsValue ToNumberString(JsValue thisObject, JsCallArguments arguments)
     {
         if (!thisObject.IsNumber() && (ReferenceEquals(thisObject.TryCast<NumberInstance>(), null)))
         {
-            ExceptionHelper.ThrowTypeError(_realm);
+            Throw.TypeError(_realm);
         }
 
         var radix = arguments.At(0).IsUndefined()
@@ -371,7 +333,7 @@ internal sealed class NumberPrototype : NumberInstance
 
         if (radix < 2 || radix > 36)
         {
-            ExceptionHelper.ThrowRangeError(_realm, "radix must be between 2 and 36");
+            Throw.RangeError(_realm, "radix must be between 2 and 36");
         }
 
         var x = TypeConverter.ToNumber(thisObject);
@@ -402,7 +364,7 @@ internal sealed class NumberPrototype : NumberInstance
         }
 
         var integer = (long) x;
-        var fraction = x -  integer;
+        var fraction = x - integer;
 
         string result = NumberPrototype.ToBase(integer, radix);
         if (fraction != 0)
@@ -446,7 +408,7 @@ internal sealed class NumberPrototype : NumberInstance
         var result = new ValueStringBuilder(stackalloc char[64]);
         while (n > 0 && result.Length < 50) // arbitrary limit
         {
-            var c = n*radix;
+            var c = n * radix;
             var d = (int) c;
             n = c - d;
 
@@ -528,7 +490,7 @@ internal sealed class NumberPrototype : NumberInstance
                 exponent = -exponent;
             }
 
-            stringBuilder.Append(exponent.ToString(CultureInfo.InvariantCulture));
+            stringBuilder.Append(exponent);
         }
 
         return stringBuilder.ToString();

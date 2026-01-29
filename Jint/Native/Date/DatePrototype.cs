@@ -3,7 +3,7 @@
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using Jint.Collections;
+using Jint.Native.Intl;
 using Jint.Native.Object;
 using Jint.Native.Symbol;
 using Jint.Runtime;
@@ -37,7 +37,7 @@ internal sealed class DatePrototype : Prototype
         _timeSystem = engine.Options.TimeSystem;
     }
 
-    protected override  void Initialize()
+    protected override void Initialize()
     {
         const PropertyFlag lengthFlags = PropertyFlag.Configurable;
         const PropertyFlag propertyFlags = PropertyFlag.Configurable | PropertyFlag.Writable;
@@ -103,18 +103,18 @@ internal sealed class DatePrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-date.prototype-@@toprimitive
     /// </summary>
-    private JsValue ToPrimitive(JsValue thisObject, JsValue[] arguments)
+    private JsValue ToPrimitive(JsValue thisObject, JsCallArguments arguments)
     {
         var oi = thisObject as ObjectInstance;
         if (oi is null)
         {
-            ExceptionHelper.ThrowTypeError(_realm);
+            Throw.TypeError(_realm);
         }
 
         var hint = arguments.At(0);
         if (!hint.IsString())
         {
-            ExceptionHelper.ThrowTypeError(_realm);
+            Throw.TypeError(_realm);
         }
 
         var hintString = hint.ToString();
@@ -123,19 +123,19 @@ internal sealed class DatePrototype : Prototype
         {
             tryFirst = Types.String;
         }
-        else  if (string.Equals(hintString, "number", StringComparison.Ordinal))
+        else if (string.Equals(hintString, "number", StringComparison.Ordinal))
         {
             tryFirst = Types.Number;
         }
         else
         {
-            ExceptionHelper.ThrowTypeError(_realm);
+            Throw.TypeError(_realm);
         }
 
         return TypeConverter.OrdinaryToPrimitive(oi, tryFirst);
     }
 
-    private JsValue ValueOf(JsValue thisObject, JsValue[] arguments)
+    private JsValue ValueOf(JsValue thisObject, JsCallArguments arguments)
     {
         return ThisTimeValue(thisObject).ToJsValue();
     }
@@ -150,14 +150,14 @@ internal sealed class DatePrototype : Prototype
             return dateInstance._dateValue;
         }
 
-        ExceptionHelper.ThrowTypeError(_realm, "this is not a Date object");
+        Throw.TypeError(_realm, "this is not a Date object");
         return default;
     }
 
     /// <summary>
     /// https://tc39.es/ecma262/#sec-date.prototype.tostring
     /// </summary>
-    internal JsValue ToString(JsValue thisObject, JsValue[] arg2)
+    internal JsValue ToString(JsValue thisObject, JsCallArguments arguments)
     {
         var tv = ThisTimeValue(thisObject);
         return ToDateString(tv);
@@ -166,7 +166,7 @@ internal sealed class DatePrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-date.prototype.todatestring
     /// </summary>
-    private JsValue ToDateString(JsValue thisObject, JsValue[] arguments)
+    private JsValue ToDateString(JsValue thisObject, JsCallArguments arguments)
     {
         var tv = ThisTimeValue(thisObject);
 
@@ -196,7 +196,7 @@ internal sealed class DatePrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-date.prototype.totimestring
     /// </summary>
-    private JsValue ToTimeString(JsValue thisObject, JsValue[] arguments)
+    private JsValue ToTimeString(JsValue thisObject, JsCallArguments arguments)
     {
         var tv = ThisTimeValue(thisObject);
 
@@ -212,8 +212,9 @@ internal sealed class DatePrototype : Prototype
 
     /// <summary>
     /// https://tc39.es/ecma262/#sec-date.prototype.tolocalestring
+    /// https://tc39.es/ecma402/#sup-date.prototype.tolocalestring
     /// </summary>
-    private JsValue ToLocaleString(JsValue thisObject, JsValue[] arguments)
+    private JsValue ToLocaleString(JsValue thisObject, JsCallArguments arguments)
     {
         var dateInstance = ThisTimeValue(thisObject);
 
@@ -222,13 +223,39 @@ internal sealed class DatePrototype : Prototype
             return "Invalid Date";
         }
 
-        return ToLocalTime(dateInstance).ToString("F", Engine.Options.Culture);
+        var locales = arguments.At(0);
+        var options = arguments.At(1);
+
+        // Per ECMA-402 ToDateTimeOptions("any", "all"):
+        // If no date/time options are specified, use default numeric components
+        var optionsObj = IntlUtilities.CoerceOptionsToObject(Engine, options);
+        var needDefaults = NeedDateTimeDefaults(optionsObj, checkDate: true, checkTime: true);
+
+        if (needDefaults)
+        {
+            // Add default date and time components per spec
+            // Use null prototype per ToDateTimeOptions step 2: ObjectCreate(options)
+            var newOptions = ObjectInstance.OrdinaryObjectCreate(Engine, null);
+            CopyOptions(optionsObj, newOptions);
+            newOptions.Set("year", "numeric");
+            newOptions.Set("month", "numeric");
+            newOptions.Set("day", "numeric");
+            newOptions.Set("hour", "numeric");
+            newOptions.Set("minute", "numeric");
+            newOptions.Set("second", "numeric");
+            options = newOptions;
+        }
+
+        // Use Intl.DateTimeFormat for locale-aware formatting
+        var dateTimeFormat = (JsDateTimeFormat) Engine.Realm.Intrinsics.DateTimeFormat.Construct([locales, options], Engine.Realm.Intrinsics.DateTimeFormat);
+        return dateTimeFormat.Format(ToLocalTime(dateInstance));
     }
 
     /// <summary>
     /// https://tc39.es/ecma262/#sec-date.prototype.tolocaledatestring
+    /// https://tc39.es/ecma402/#sup-date.prototype.tolocaledatestring
     /// </summary>
-    private JsValue ToLocaleDateString(JsValue thisObject, JsValue[] arguments)
+    private JsValue ToLocaleDateString(JsValue thisObject, JsCallArguments arguments)
     {
         var dateInstance = ThisTimeValue(thisObject);
 
@@ -237,13 +264,36 @@ internal sealed class DatePrototype : Prototype
             return "Invalid Date";
         }
 
-        return ToLocalTime(dateInstance).ToString("D", Engine.Options.Culture);
+        var locales = arguments.At(0);
+        var options = arguments.At(1);
+
+        // Per ECMA-402 ToDateTimeOptions("date", "date"):
+        // If no date options are specified, use default numeric date components
+        var optionsObj = IntlUtilities.CoerceOptionsToObject(Engine, options);
+        var needDefaults = NeedDateTimeDefaults(optionsObj, checkDate: true, checkTime: false);
+
+        if (needDefaults)
+        {
+            // Add default date components per spec
+            // Use null prototype per ToDateTimeOptions step 2: ObjectCreate(options)
+            var newOptions = ObjectInstance.OrdinaryObjectCreate(Engine, null);
+            CopyOptions(optionsObj, newOptions);
+            newOptions.Set("year", "numeric");
+            newOptions.Set("month", "numeric");
+            newOptions.Set("day", "numeric");
+            options = newOptions;
+        }
+
+        // Use Intl.DateTimeFormat for locale-aware formatting
+        var dateTimeFormat = (JsDateTimeFormat) Engine.Realm.Intrinsics.DateTimeFormat.Construct([locales, options], Engine.Realm.Intrinsics.DateTimeFormat);
+        return dateTimeFormat.Format(ToLocalTime(dateInstance));
     }
 
     /// <summary>
     /// https://tc39.es/ecma262/#sec-date.prototype.tolocaletimestring
+    /// https://tc39.es/ecma402/#sup-date.prototype.tolocaletimestring
     /// </summary>
-    private JsValue ToLocaleTimeString(JsValue thisObject, JsValue[] arguments)
+    private JsValue ToLocaleTimeString(JsValue thisObject, JsCallArguments arguments)
     {
         var dateInstance = ThisTimeValue(thisObject);
 
@@ -252,10 +302,99 @@ internal sealed class DatePrototype : Prototype
             return "Invalid Date";
         }
 
-        return ToLocalTime(dateInstance).ToString("T", Engine.Options.Culture);
+        var locales = arguments.At(0);
+        var options = arguments.At(1);
+
+        // Per ECMA-402 ToDateTimeOptions("time", "time"):
+        // If no time options are specified, use default numeric time components
+        var optionsObj = IntlUtilities.CoerceOptionsToObject(Engine, options);
+        var needDefaults = NeedDateTimeDefaults(optionsObj, checkDate: false, checkTime: true);
+
+        if (needDefaults)
+        {
+            // Add default time components per spec
+            // Use null prototype per ToDateTimeOptions step 2: ObjectCreate(options)
+            var newOptions = ObjectInstance.OrdinaryObjectCreate(Engine, null);
+            CopyOptions(optionsObj, newOptions);
+            newOptions.Set("hour", "numeric");
+            newOptions.Set("minute", "numeric");
+            newOptions.Set("second", "numeric");
+            options = newOptions;
+        }
+
+        // Use Intl.DateTimeFormat for locale-aware formatting
+        var dateTimeFormat = (JsDateTimeFormat) Engine.Realm.Intrinsics.DateTimeFormat.Construct([locales, options], Engine.Realm.Intrinsics.DateTimeFormat);
+        return dateTimeFormat.Format(ToLocalTime(dateInstance));
     }
 
-    private JsValue GetTime(JsValue thisObject, JsValue[] arguments)
+    /// <summary>
+    /// Checks if default date/time options should be applied per ECMA-402 ToDateTimeOptions.
+    /// Returns true if no relevant options are specified and dateStyle/timeStyle are not present.
+    /// </summary>
+    private static bool NeedDateTimeDefaults(ObjectInstance options, bool checkDate, bool checkTime)
+    {
+        // If dateStyle or timeStyle is present, don't add defaults
+        if (!options.Get("dateStyle").IsUndefined() || !options.Get("timeStyle").IsUndefined())
+        {
+            return false;
+        }
+
+        // Check date-related properties
+        if (checkDate)
+        {
+            if (!options.Get("weekday").IsUndefined() ||
+                !options.Get("year").IsUndefined() ||
+                !options.Get("month").IsUndefined() ||
+                !options.Get("day").IsUndefined() ||
+                !options.Get("era").IsUndefined())
+            {
+                return false;
+            }
+        }
+
+        // Check time-related properties
+        if (checkTime)
+        {
+            if (!options.Get("dayPeriod").IsUndefined() ||
+                !options.Get("hour").IsUndefined() ||
+                !options.Get("minute").IsUndefined() ||
+                !options.Get("second").IsUndefined() ||
+                !options.Get("fractionalSecondDigits").IsUndefined())
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Copies all defined options from source to target, preserving user-specified values.
+    /// </summary>
+    private static void CopyOptions(ObjectInstance source, ObjectInstance target)
+    {
+        // Copy all options that should be preserved (general + date/time components)
+        var optionsToCopy = new[]
+        {
+            // General options
+            "localeMatcher", "formatMatcher", "calendar", "numberingSystem", "timeZone", "hourCycle", "hour12",
+            "dateStyle", "timeStyle",
+            // Date components
+            "weekday", "era", "year", "month", "day",
+            // Time components
+            "dayPeriod", "hour", "minute", "second", "fractionalSecondDigits"
+        };
+        foreach (var option in optionsToCopy)
+        {
+            var value = source.Get(option);
+            if (!value.IsUndefined())
+            {
+                target.Set(option, value);
+            }
+        }
+    }
+
+    private JsValue GetTime(JsValue thisObject, JsCallArguments arguments)
     {
         var t = ThisTimeValue(thisObject);
         if (t.IsNaN)
@@ -265,7 +404,7 @@ internal sealed class DatePrototype : Prototype
         return t.ToJsValue();
     }
 
-    private JsValue GetFullYear(JsValue thisObject, JsValue[] arguments)
+    private JsValue GetFullYear(JsValue thisObject, JsCallArguments arguments)
     {
         var t = ThisTimeValue(thisObject);
         if (t.IsNaN)
@@ -275,7 +414,7 @@ internal sealed class DatePrototype : Prototype
         return YearFromTime(LocalTime(t));
     }
 
-    private JsValue GetYear(JsValue thisObject, JsValue[] arguments)
+    private JsValue GetYear(JsValue thisObject, JsCallArguments arguments)
     {
         var t = ThisTimeValue(thisObject);
         if (t.IsNaN)
@@ -285,7 +424,7 @@ internal sealed class DatePrototype : Prototype
         return YearFromTime(LocalTime(t)) - 1900;
     }
 
-    private JsValue GetUTCFullYear(JsValue thisObject, JsValue[] arguments)
+    private JsValue GetUTCFullYear(JsValue thisObject, JsCallArguments arguments)
     {
         var t = ThisTimeValue(thisObject);
         if (t.IsNaN)
@@ -295,7 +434,7 @@ internal sealed class DatePrototype : Prototype
         return YearFromTime(t);
     }
 
-    private JsValue GetMonth(JsValue thisObject, JsValue[] arguments)
+    private JsValue GetMonth(JsValue thisObject, JsCallArguments arguments)
     {
         var t = ThisTimeValue(thisObject);
         if (t.IsNaN)
@@ -308,7 +447,7 @@ internal sealed class DatePrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-date.prototype.getutcmonth
     /// </summary>
-    private JsValue GetUTCMonth(JsValue thisObject, JsValue[] arguments)
+    private JsValue GetUTCMonth(JsValue thisObject, JsCallArguments arguments)
     {
         var t = ThisTimeValue(thisObject);
         if (t.IsNaN)
@@ -321,7 +460,7 @@ internal sealed class DatePrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-date.prototype.getdate
     /// </summary>
-    private JsValue GetDate(JsValue thisObject, JsValue[] arguments)
+    private JsValue GetDate(JsValue thisObject, JsCallArguments arguments)
     {
         var t = ThisTimeValue(thisObject);
         if (t.IsNaN)
@@ -331,7 +470,7 @@ internal sealed class DatePrototype : Prototype
         return DateFromTime(LocalTime(t));
     }
 
-    private JsValue GetUTCDate(JsValue thisObject, JsValue[] arguments)
+    private JsValue GetUTCDate(JsValue thisObject, JsCallArguments arguments)
     {
         var t = ThisTimeValue(thisObject);
         if (t.IsNaN)
@@ -341,7 +480,7 @@ internal sealed class DatePrototype : Prototype
         return DateFromTime(t);
     }
 
-    private JsValue GetDay(JsValue thisObject, JsValue[] arguments)
+    private JsValue GetDay(JsValue thisObject, JsCallArguments arguments)
     {
         var t = ThisTimeValue(thisObject);
         if (t.IsNaN)
@@ -351,7 +490,7 @@ internal sealed class DatePrototype : Prototype
         return WeekDay(LocalTime(t));
     }
 
-    private JsValue GetUTCDay(JsValue thisObject, JsValue[] arguments)
+    private JsValue GetUTCDay(JsValue thisObject, JsCallArguments arguments)
     {
         var t = ThisTimeValue(thisObject);
         if (t.IsNaN)
@@ -361,7 +500,7 @@ internal sealed class DatePrototype : Prototype
         return WeekDay(t);
     }
 
-    private JsValue GetHours(JsValue thisObject, JsValue[] arguments)
+    private JsValue GetHours(JsValue thisObject, JsCallArguments arguments)
     {
         var t = ThisTimeValue(thisObject);
         if (t.IsNaN)
@@ -371,7 +510,7 @@ internal sealed class DatePrototype : Prototype
         return HourFromTime(LocalTime(t));
     }
 
-    private JsValue GetUTCHours(JsValue thisObject, JsValue[] arguments)
+    private JsValue GetUTCHours(JsValue thisObject, JsCallArguments arguments)
     {
         var t = ThisTimeValue(thisObject);
         if (t.IsNaN)
@@ -381,7 +520,7 @@ internal sealed class DatePrototype : Prototype
         return HourFromTime(t);
     }
 
-    private JsValue GetMinutes(JsValue thisObject, JsValue[] arguments)
+    private JsValue GetMinutes(JsValue thisObject, JsCallArguments arguments)
     {
         var t = ThisTimeValue(thisObject);
         if (t.IsNaN)
@@ -391,7 +530,7 @@ internal sealed class DatePrototype : Prototype
         return MinFromTime(LocalTime(t));
     }
 
-    private JsValue GetUTCMinutes(JsValue thisObject, JsValue[] arguments)
+    private JsValue GetUTCMinutes(JsValue thisObject, JsCallArguments arguments)
     {
         var t = ThisTimeValue(thisObject);
         if (t.IsNaN)
@@ -401,7 +540,7 @@ internal sealed class DatePrototype : Prototype
         return MinFromTime(t);
     }
 
-    private JsValue GetSeconds(JsValue thisObject, JsValue[] arguments)
+    private JsValue GetSeconds(JsValue thisObject, JsCallArguments arguments)
     {
         var t = ThisTimeValue(thisObject);
         if (t.IsNaN)
@@ -411,7 +550,7 @@ internal sealed class DatePrototype : Prototype
         return SecFromTime(LocalTime(t));
     }
 
-    private JsValue GetUTCSeconds(JsValue thisObject, JsValue[] arguments)
+    private JsValue GetUTCSeconds(JsValue thisObject, JsCallArguments arguments)
     {
         var t = ThisTimeValue(thisObject);
         if (t.IsNaN)
@@ -421,7 +560,7 @@ internal sealed class DatePrototype : Prototype
         return SecFromTime(t);
     }
 
-    private JsValue GetMilliseconds(JsValue thisObject, JsValue[] arguments)
+    private JsValue GetMilliseconds(JsValue thisObject, JsCallArguments arguments)
     {
         var t = ThisTimeValue(thisObject);
         if (t.IsNaN)
@@ -431,7 +570,7 @@ internal sealed class DatePrototype : Prototype
         return MsFromTime(LocalTime(t));
     }
 
-    private JsValue GetUTCMilliseconds(JsValue thisObject, JsValue[] arguments)
+    private JsValue GetUTCMilliseconds(JsValue thisObject, JsCallArguments arguments)
     {
         var t = ThisTimeValue(thisObject);
         if (t.IsNaN)
@@ -441,20 +580,20 @@ internal sealed class DatePrototype : Prototype
         return MsFromTime(t);
     }
 
-    private JsValue GetTimezoneOffset(JsValue thisObject, JsValue[] arguments)
+    private JsValue GetTimezoneOffset(JsValue thisObject, JsCallArguments arguments)
     {
         var t = ThisTimeValue(thisObject);
         if (t.IsNaN)
         {
             return JsNumber.DoubleNaN;
         }
-        return (int) ((double) t.Value - LocalTime(t).Value)/MsPerMinute;
+        return (int) ((double) t.Value - LocalTime(t).Value) / MsPerMinute;
     }
 
     /// <summary>
     /// https://tc39.es/ecma262/#sec-date.prototype.settime
     /// </summary>
-    private JsValue SetTime(JsValue thisObject, JsValue[] arguments)
+    private JsValue SetTime(JsValue thisObject, JsCallArguments arguments)
     {
         ThisTimeValue(thisObject);
         var t = TypeConverter.ToNumber(arguments.At(0));
@@ -467,7 +606,7 @@ internal sealed class DatePrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-date.prototype.setmilliseconds
     /// </summary>
-    private JsValue SetMilliseconds(JsValue thisObject, JsValue[] arguments)
+    private JsValue SetMilliseconds(JsValue thisObject, JsCallArguments arguments)
     {
         var t = LocalTime(ThisTimeValue(thisObject));
         var ms = TypeConverter.ToNumber(arguments.At(0));
@@ -486,7 +625,7 @@ internal sealed class DatePrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-date.prototype.setutcmilliseconds
     /// </summary>
-    private JsValue SetUTCMilliseconds(JsValue thisObject, JsValue[] arguments)
+    private JsValue SetUTCMilliseconds(JsValue thisObject, JsCallArguments arguments)
     {
         var t = ThisTimeValue(thisObject);
         var milli = TypeConverter.ToNumber(arguments.At(0));
@@ -505,7 +644,7 @@ internal sealed class DatePrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-date.prototype.setseconds
     /// </summary>
-    private JsValue SetSeconds(JsValue thisObject, JsValue[] arguments)
+    private JsValue SetSeconds(JsValue thisObject, JsCallArguments arguments)
     {
         var t = LocalTime(ThisTimeValue(thisObject));
         var s = TypeConverter.ToNumber(arguments.At(0));
@@ -525,7 +664,7 @@ internal sealed class DatePrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-date.prototype.setutcseconds
     /// </summary>
-    private JsValue SetUTCSeconds(JsValue thisObject, JsValue[] arguments)
+    private JsValue SetUTCSeconds(JsValue thisObject, JsCallArguments arguments)
     {
         var t = ThisTimeValue(thisObject);
         var s = TypeConverter.ToNumber(arguments.At(0));
@@ -545,7 +684,7 @@ internal sealed class DatePrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-date.prototype.setminutes
     /// </summary>
-    private JsValue SetMinutes(JsValue thisObject, JsValue[] arguments)
+    private JsValue SetMinutes(JsValue thisObject, JsCallArguments arguments)
     {
         var t = LocalTime(ThisTimeValue(thisObject));
         var m = TypeConverter.ToNumber(arguments.At(0));
@@ -566,7 +705,7 @@ internal sealed class DatePrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-date.prototype.setutcminutes
     /// </summary>
-    private JsValue SetUTCMinutes(JsValue thisObject, JsValue[] arguments)
+    private JsValue SetUTCMinutes(JsValue thisObject, JsCallArguments arguments)
     {
         var t = ThisTimeValue(thisObject);
         var m = TypeConverter.ToNumber(arguments.At(0));
@@ -587,7 +726,7 @@ internal sealed class DatePrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-date.prototype.sethours
     /// </summary>
-    private JsValue SetHours(JsValue thisObject, JsValue[] arguments)
+    private JsValue SetHours(JsValue thisObject, JsCallArguments arguments)
     {
         var t = LocalTime(ThisTimeValue(thisObject));
         var h = TypeConverter.ToNumber(arguments.At(0));
@@ -609,7 +748,7 @@ internal sealed class DatePrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-date.prototype.setutchours
     /// </summary>
-    private JsValue SetUTCHours(JsValue thisObject, JsValue[] arguments)
+    private JsValue SetUTCHours(JsValue thisObject, JsCallArguments arguments)
     {
         var t = ThisTimeValue(thisObject);
         var h = TypeConverter.ToNumber(arguments.At(0));
@@ -631,7 +770,7 @@ internal sealed class DatePrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-date.prototype.setdate
     /// </summary>
-    private JsValue SetDate(JsValue thisObject, JsValue[] arguments)
+    private JsValue SetDate(JsValue thisObject, JsCallArguments arguments)
     {
         var t = LocalTime(ThisTimeValue(thisObject));
         var dt = TypeConverter.ToNumber(arguments.At(0));
@@ -651,7 +790,7 @@ internal sealed class DatePrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-date.prototype.setutcdate
     /// </summary>
-    private JsValue SetUTCDate(JsValue thisObject, JsValue[] arguments)
+    private JsValue SetUTCDate(JsValue thisObject, JsCallArguments arguments)
     {
         var t = ThisTimeValue(thisObject);
         var dt = TypeConverter.ToNumber(arguments.At(0));
@@ -670,7 +809,7 @@ internal sealed class DatePrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-date.prototype.setmonth
     /// </summary>
-    private JsValue SetMonth(JsValue thisObject, JsValue[] arguments)
+    private JsValue SetMonth(JsValue thisObject, JsCallArguments arguments)
     {
         var t = LocalTime(ThisTimeValue(thisObject));
         var m = TypeConverter.ToNumber(arguments.At(0));
@@ -690,7 +829,7 @@ internal sealed class DatePrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-date.prototype.setutcmonth
     /// </summary>
-    private JsValue SetUTCMonth(JsValue thisObject, JsValue[] arguments)
+    private JsValue SetUTCMonth(JsValue thisObject, JsCallArguments arguments)
     {
         var t = ThisTimeValue(thisObject);
         var m = TypeConverter.ToNumber(arguments.At(0));
@@ -710,7 +849,7 @@ internal sealed class DatePrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-date.prototype.setfullyear
     /// </summary>
-    private JsValue SetFullYear(JsValue thisObject, JsValue[] arguments)
+    private JsValue SetFullYear(JsValue thisObject, JsCallArguments arguments)
     {
         var thisTime = ThisTimeValue(thisObject);
         var t = thisTime.IsNaN ? 0 : LocalTime(thisTime);
@@ -727,7 +866,7 @@ internal sealed class DatePrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-date.prototype.setyear
     /// </summary>
-    private JsValue SetYear(JsValue thisObject, JsValue[] arguments)
+    private JsValue SetYear(JsValue thisObject, JsCallArguments arguments)
     {
         var thisTime = ThisTimeValue(thisObject);
         var t = thisTime.IsNaN ? 0 : LocalTime(thisTime);
@@ -753,7 +892,7 @@ internal sealed class DatePrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-date.prototype.setutcfullyear
     /// </summary>
-    private JsValue SetUTCFullYear(JsValue thisObject, JsValue[] arguments)
+    private JsValue SetUTCFullYear(JsValue thisObject, JsCallArguments arguments)
     {
         var thisTime = ThisTimeValue(thisObject);
         var t = thisTime.IsNaN ? 0 : thisTime;
@@ -769,7 +908,7 @@ internal sealed class DatePrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-date.prototype.toutcstring
     /// </summary>
-    private JsValue ToUtcString(JsValue thisObject, JsValue[] arguments)
+    private JsValue ToUtcString(JsValue thisObject, JsCallArguments arguments)
     {
         var tv = ThisTimeValue(thisObject);
         if (!IsFinite(tv))
@@ -789,13 +928,13 @@ internal sealed class DatePrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-date.prototype.toisostring
     /// </summary>
-    private JsValue ToISOString(JsValue thisObject, JsValue[] arguments)
+    private JsValue ToISOString(JsValue thisObject, JsCallArguments arguments)
     {
         var thisTime = ThisTimeValue(thisObject);
         var t = thisTime;
         if (t.IsNaN)
         {
-            ExceptionHelper.ThrowRangeError(_realm);
+            Throw.RangeError(_realm);
         }
 
         if (((JsDate) thisObject).DateTimeRangeValid)
@@ -826,7 +965,7 @@ internal sealed class DatePrototype : Prototype
         return formatted;
     }
 
-    private JsValue ToJson(JsValue thisObject, JsValue[] arguments)
+    private JsValue ToJson(JsValue thisObject, JsCallArguments arguments)
     {
         var o = TypeConverter.ToObject(_realm, thisObject);
         var tv = TypeConverter.ToPrimitive(o, Types.Number);
@@ -874,22 +1013,22 @@ internal sealed class DatePrototype : Prototype
     /// </summary>
     private static int DaysInYear(double y)
     {
-        if (y%4 != 0)
+        if (y % 4 != 0)
         {
             return 365;
         }
 
-        if (y%4 == 0 && y%100 != 0)
+        if (y % 4 == 0 && y % 100 != 0)
         {
             return 366;
         }
 
-        if (y%100 == 0 && y%400 != 0)
+        if (y % 100 == 0 && y % 400 != 0)
         {
             return 365;
         }
 
-        if (y%400 == 0)
+        if (y % 400 == 0)
         {
             return 366;
         }
@@ -902,10 +1041,10 @@ internal sealed class DatePrototype : Prototype
     /// </summary>
     private static int DayFromYear(DatePresentation y)
     {
-        return (int) (365*(y.Value - 1970)
-                      + System.Math.Floor((y.Value - 1969)/4d)
-                      - System.Math.Floor((y.Value - 1901)/100d)
-                      + System.Math.Floor((y.Value - 1601)/400d));
+        return (int) (365 * (y.Value - 1970)
+                      + System.Math.Floor((y.Value - 1969) / 4d)
+                      - System.Math.Floor((y.Value - 1901) / 100d)
+                      + System.Math.Floor((y.Value - 1601) / 400d));
     }
 
     /// <summary>
@@ -913,7 +1052,7 @@ internal sealed class DatePrototype : Prototype
     /// </summary>
     private static long TimeFromYear(DatePresentation y)
     {
-        return MsPerDay*DayFromYear(y);
+        return MsPerDay * DayFromYear(y);
     }
 
     /// <summary>
@@ -942,7 +1081,7 @@ internal sealed class DatePrototype : Prototype
             return 1;
         }
 
-        ExceptionHelper.ThrowArgumentException();
+        Throw.ArgumentException();
         return 0;
     }
 
@@ -1014,7 +1153,7 @@ internal sealed class DatePrototype : Prototype
             return 11;
         }
 
-        ExceptionHelper.ThrowInvalidOperationException();
+        Throw.InvalidOperationException();
         return 0;
     }
 
@@ -1033,7 +1172,7 @@ internal sealed class DatePrototype : Prototype
             return dayWithinYear + 1;
         }
 
-        if (monthFromTime== 1)
+        if (monthFromTime == 1)
         {
             return dayWithinYear - 30;
         }
@@ -1088,7 +1227,7 @@ internal sealed class DatePrototype : Prototype
             return dayWithinYear - 333 - InLeapYear(t);
         }
 
-        ExceptionHelper.ThrowInvalidOperationException();
+        Throw.InvalidOperationException();
         return 0;
     }
 
@@ -1186,13 +1325,13 @@ internal sealed class DatePrototype : Prototype
         var m = TypeConverter.ToInteger(min);
         var s = TypeConverter.ToInteger(sec);
         var milli = TypeConverter.ToInteger(ms);
-        var t = h*MsPerHour + m*MsPerMinute + s*MsPerSecond + milli;
+        var t = h * MsPerHour + m * MsPerMinute + s * MsPerSecond + milli;
 
         return t;
     }
 
-    private static readonly int[] _dayFromMonth = { 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334 };
-    private static readonly int[] _dayFromMonthLeapYear = { 0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335 };
+    private static readonly int[] _dayFromMonth = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+    private static readonly int[] _dayFromMonthLeapYear = [0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335];
 
     internal static double MakeDay(double year, double month, double date)
     {
@@ -1263,12 +1402,12 @@ internal sealed class DatePrototype : Prototype
         => IsFinite(value1) && IsFinite(value2) && IsFinite(value3);
 
     private static bool AreFinite(double value1, double value2, double value3, double value4)
-        => IsFinite(value1) && IsFinite(value2) &&  IsFinite(value3) && IsFinite(value4);
+        => IsFinite(value1) && IsFinite(value2) && IsFinite(value3) && IsFinite(value4);
 
     [StructLayout(LayoutKind.Auto)]
     private readonly record struct Date(int Year, int Month, int Day);
 
-    private static readonly int[] kDaysInMonths = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    private static readonly int[] kDaysInMonths = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
     private static Date YearMonthDayFromTime(DatePresentation t) => YearMonthDayFromDays((long) System.Math.Floor(t.Value / 1000 / 60 / 60 / 24d));
 
@@ -1342,14 +1481,14 @@ internal sealed class DatePrototype : Prototype
     }
 
     private static readonly string[] _dayNames =
-    {
+    [
         "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"
-    };
+    ];
 
     private static readonly string[] _monthNames =
-    {
+    [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
-    };
+    ];
 
     /// <summary>
     /// https://tc39.es/ecma262/#sec-datestring

@@ -1,4 +1,3 @@
-using Jint.Collections;
 using Jint.Native.Object;
 using Jint.Native.Symbol;
 using Jint.Runtime;
@@ -43,14 +42,14 @@ internal sealed class ShadowRealmPrototype : Prototype
     /// <summary>
     /// https://tc39.es/proposal-shadowrealm/#sec-shadowrealm.prototype.evaluate
     /// </summary>
-    private JsValue Evaluate(JsValue thisObject, JsValue[] arguments)
+    private JsValue Evaluate(JsValue thisObject, JsCallArguments arguments)
     {
         var shadowRealm = ValidateShadowRealmObject(thisObject);
         var sourceText = arguments.At(0);
 
         if (!sourceText.IsString())
         {
-            ExceptionHelper.ThrowTypeError(_realm, "Invalid source text " + sourceText);
+            Throw.TypeError(_realm, "Invalid source text " + sourceText);
         }
 
         var parserOptions = _engine.GetActiveParserOptions();
@@ -66,7 +65,7 @@ internal sealed class ShadowRealmPrototype : Prototype
     /// <summary>
     /// https://tc39.es/proposal-shadowrealm/#sec-shadowrealm.prototype.importvalue
     /// </summary>
-    private JsValue ImportValue(JsValue thisObject, JsValue[] arguments)
+    private JsValue ImportValue(JsValue thisObject, JsCallArguments arguments)
     {
         var specifier = arguments.At(0);
         var exportName = arguments.At(1);
@@ -75,12 +74,12 @@ internal sealed class ShadowRealmPrototype : Prototype
         var specifierString = TypeConverter.ToJsString(specifier);
         if (!specifier.IsString())
         {
-            ExceptionHelper.ThrowTypeError(_realm, "Invalid specifier");
+            Throw.TypeError(_realm, "Invalid specifier");
         }
 
         if (!exportName.IsString())
         {
-            ExceptionHelper.ThrowTypeError(_realm, "Invalid exportName");
+            Throw.TypeError(_realm, "Invalid exportName");
         }
 
         var callerRealm = _realm;
@@ -94,7 +93,7 @@ internal sealed class ShadowRealmPrototype : Prototype
             return shadowRealm;
         }
 
-        ExceptionHelper.ThrowTypeError(_realm, "object must be a ShadowRealm");
+        Throw.TypeError(_realm, "object must be a ShadowRealm");
         return default;
     }
 }

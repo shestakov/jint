@@ -27,11 +27,11 @@ internal sealed class JsWeakMap : ObjectInstance
     {
         if (!key.CanBeHeldWeakly(_engine.GlobalSymbolRegistry))
         {
-            ExceptionHelper.ThrowTypeError(_engine.Realm, "WeakMap key must be an object, got " + key);
+            Throw.TypeError(_engine.Realm, "WeakMap key must be an object, got " + key);
         }
 
 #if SUPPORTS_WEAK_TABLE_ADD_OR_UPDATE
-         _table.AddOrUpdate(key, value);
+        _table.AddOrUpdate(key, value);
 #else
         _table.Remove(key);
         _table.Add(key, value);
@@ -48,4 +48,33 @@ internal sealed class JsWeakMap : ObjectInstance
         return value;
     }
 
+    internal JsValue GetOrInsert(JsValue key, JsValue value)
+    {
+        if (_table.TryGetValue(key, out var temp))
+        {
+            return temp;
+        }
+
+        _table.Add(key, value);
+        return value;
+    }
+
+    internal JsValue GetOrInsertComputed(JsValue key, ICallable callbackfn)
+    {
+        if (_table.TryGetValue(key, out var temp))
+        {
+            return temp;
+        }
+
+        var value = callbackfn.Call(Undefined, key);
+
+        // NOTE: The Map may have been modified during execution of callback.
+        if (_table.TryGetValue(key, out _))
+        {
+            _table.Remove(key);
+        }
+
+        _table.Add(key, value);
+        return value;
+    }
 }

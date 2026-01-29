@@ -1,4 +1,3 @@
-using Jint.Collections;
 using Jint.Native;
 using Jint.Native.Function;
 using Jint.Native.Object;
@@ -11,8 +10,8 @@ namespace Jint.Runtime.Interpreter.Expressions;
 /// </summary>
 internal sealed class JintObjectExpression : JintExpression
 {
-    private JintExpression[] _valueExpressions = Array.Empty<JintExpression>();
-    private ObjectProperty?[] _properties = Array.Empty<ObjectProperty>();
+    private readonly ExpressionCache _valueExpressions = new();
+    private ObjectProperty?[] _properties = [];
 
     // check if we can do a shortcut when all are object properties
     // and don't require duplicate checking
@@ -44,7 +43,7 @@ internal sealed class JintObjectExpression : JintExpression
             var function = _value.Value as IFunction;
             if (function is null)
             {
-                ExceptionHelper.ThrowSyntaxError(engine.Realm);
+                Throw.SyntaxError(engine.Realm);
             }
 
             _functionDefinition = new JintFunctionDefinition(function);
@@ -63,13 +62,13 @@ internal sealed class JintObjectExpression : JintExpression
             : new JintObjectExpression(expression);
     }
 
-    private void Initialize()
+    private void Initialize(EvaluationContext context)
     {
         _canBuildFast = true;
         var expression = (ObjectExpression) _expression;
         ref readonly var properties = ref expression.Properties;
 
-        _valueExpressions = new JintExpression[properties.Count];
+        var valueExpressions = new Expression[properties.Count];
         _properties = new ObjectProperty[properties.Count];
 
         for (var i = 0; i < _properties.Length; i++)
@@ -78,12 +77,11 @@ internal sealed class JintObjectExpression : JintExpression
             var property = properties[i];
             if (property is Acornima.Ast.ObjectProperty p)
             {
-                if (p.Key is Literal literal)
+                if (!p.Computed && p.Key is Literal literal)
                 {
                     propName = AstExtensions.LiteralKeyToString(literal);
                 }
-
-                if (!p.Computed && p.Key is Identifier identifier)
+                else if (!p.Computed && p.Key is Identifier identifier)
                 {
                     propName = identifier.Name;
                     _canBuildFast &= !string.Equals(propName, "__proto__", StringComparison.Ordinal);
@@ -94,7 +92,7 @@ internal sealed class JintObjectExpression : JintExpression
                 if (p.Kind is PropertyKind.Init)
                 {
                     var propertyValue = p.Value;
-                    _valueExpressions[i] = Build((Expression) propertyValue);
+                    valueExpressions[i] = (Expression) propertyValue;
                     _canBuildFast &= !propertyValue.IsFunctionDefinition();
                 }
                 else
@@ -106,22 +104,24 @@ internal sealed class JintObjectExpression : JintExpression
             {
                 _canBuildFast = false;
                 _properties[i] = null;
-                _valueExpressions[i] = Build(spreadElement.Argument);
+                valueExpressions[i] = spreadElement.Argument;
             }
             else
             {
-                ExceptionHelper.ThrowArgumentOutOfRangeException("property", "cannot handle property " + property);
+                Throw.ArgumentOutOfRangeException("property", "cannot handle property " + property);
             }
 
             _canBuildFast &= propName != null;
         }
+
+        _valueExpressions.Initialize(context, valueExpressions.AsSpan());
     }
 
     protected override object EvaluateInternal(EvaluationContext context)
     {
         if (!_initialized)
         {
-            Initialize();
+            Initialize(context);
             _initialized = true;
         }
 
@@ -133,15 +133,22 @@ internal sealed class JintObjectExpression : JintExpression
     /// <summary>
     /// Version that can safely build plain object with only normal init/data fields fast.
     /// </summary>
-    private JsObject BuildObjectFast(EvaluationContext context)
+    private JsValue BuildObjectFast(EvaluationContext context)
     {
-        var obj = new JsObject(context.Engine);
+        var engine = context.Engine;
+        var obj = new JsObject(engine);
         var properties = new PropertyDictionary(_properties.Length, checkExistingKeys: true);
         for (var i = 0; i < _properties.Length; i++)
         {
             var objectProperty = _properties[i];
-            var valueExpression = _valueExpressions[i];
-            var propValue = valueExpression.GetValue(context).Clone();
+            var propValue = _valueExpressions.GetValue(context, i);
+
+            // Check for generator suspension after each property evaluation
+            if (context.IsSuspended())
+            {
+                return JsValue.Undefined;
+            }
+
             properties[objectProperty!._key!] = new PropertyDescriptor(propValue, PropertyFlag.ConfigurableEnumerableWritable);
         }
 
@@ -164,9 +171,17 @@ internal sealed class JintObjectExpression : JintExpression
             if (objectProperty is null)
             {
                 // spread
-                if (_valueExpressions[i].GetValue(context) is ObjectInstance source)
+                var spreadValue = _valueExpressions.GetValue(context, i);
+
+                // Check for generator suspension
+                if (context.IsSuspended())
                 {
-                    source.CopyDataProperties(obj, null);
+                    return JsValue.Undefined;
+                }
+
+                if (spreadValue is ObjectInstance source)
+                {
+                    source.CopyDataProperties(obj, excludedItems: null);
                 }
 
                 continue;
@@ -189,19 +204,25 @@ internal sealed class JintObjectExpression : JintExpression
                     return value;
                 }
 
+                // Check for generator suspension after evaluating computed property key
+                if (context.IsSuspended())
+                {
+                    return value;
+                }
+
                 propName = TypeConverter.ToPropertyKey(value);
             }
 
             if (property.Kind == PropertyKind.Init)
             {
-                var expr = _valueExpressions[i];
-                var completion = expr.GetValue(context);
-                if (context.IsAbrupt())
+                var propValue = _valueExpressions.GetValue(context, i)!;
+
+                // Check for generator suspension
+                if (context.IsSuspended())
                 {
-                    return completion;
+                    return JsValue.Undefined;
                 }
 
-                var propValue = completion.Clone();
                 if (string.Equals(objectProperty._key, "__proto__", StringComparison.Ordinal) && !objectProperty._value.Computed && !objectProperty._value.Shorthand)
                 {
                     if (propValue.IsObject() || propValue.IsNull())
@@ -211,7 +232,7 @@ internal sealed class JintObjectExpression : JintExpression
                     continue;
                 }
 
-                if (expr._expression.IsAnonymousFunctionDefinition())
+                if (_valueExpressions.IsAnonymousFunctionDefinition(i))
                 {
                     var closure = (Function) propValue;
                     closure.SetFunctionName(propName);

@@ -1,6 +1,5 @@
 using System.Buffers;
 using System.Globalization;
-using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text;
 using Jint.Extensions;
@@ -23,7 +22,7 @@ public sealed partial class GlobalObject : ObjectInstance
         _realm = realm;
     }
 
-    private JsValue ToStringString(JsValue thisObject, JsValue[] arguments)
+    private JsValue ToStringString(JsValue thisObject, JsCallArguments arguments)
     {
         return _realm.Intrinsics.Object.PrototypeObject.ToObjectString(thisObject, Arguments.Empty);
     }
@@ -31,7 +30,7 @@ public sealed partial class GlobalObject : ObjectInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-parseint-string-radix
     /// </summary>
-    internal static JsValue ParseInt(JsValue thisObject, JsValue[] arguments)
+    internal static JsValue ParseInt(JsValue thisObject, JsCallArguments arguments)
     {
         var inputString = TypeConverter.ToString(arguments.At(0));
         var trimmed = StringPrototype.TrimEx(inputString);
@@ -114,13 +113,13 @@ public sealed partial class GlobalObject : ObjectInstance
             pow *= radix;
         }
 
-        return hasResult ? JsNumber.Create(sign  * result) : JsNumber.DoubleNaN;
+        return hasResult ? JsNumber.Create(sign * result) : JsNumber.DoubleNaN;
     }
 
     /// <summary>
     /// https://tc39.es/ecma262/#sec-parsefloat-string
     /// </summary>
-    internal static JsValue ParseFloat(JsValue thisObject, JsValue[] arguments)
+    internal static JsValue ParseFloat(JsValue thisObject, JsCallArguments arguments)
     {
         var inputString = TypeConverter.ToString(arguments.At(0));
         var trimmedString = StringPrototype.TrimStartEx(inputString);
@@ -224,7 +223,7 @@ public sealed partial class GlobalObject : ObjectInstance
         // we should now have proper input part
 
 #if SUPPORTS_SPAN_PARSE
-            var substring = trimmedString.AsSpan(0, i);
+        var substring = trimmedString.AsSpan(0, i);
 #else
         var substring = trimmedString.Substring(0, i);
 #endif
@@ -241,7 +240,7 @@ public sealed partial class GlobalObject : ObjectInstance
     /// <summary>
     /// http://www.ecma-international.org/ecma-262/5.1/#sec-15.1.2.4
     /// </summary>
-    private static JsValue IsNaN(JsValue thisObject, JsValue[] arguments)
+    private static JsValue IsNaN(JsValue thisObject, JsCallArguments arguments)
     {
         var value = arguments.At(0);
 
@@ -257,7 +256,7 @@ public sealed partial class GlobalObject : ObjectInstance
     /// <summary>
     /// http://www.ecma-international.org/ecma-262/5.1/#sec-15.1.2.5
     /// </summary>
-    private static JsValue IsFinite(JsValue thisObject, JsValue[] arguments)
+    private static JsValue IsFinite(JsValue thisObject, JsCallArguments arguments)
     {
         if (arguments.Length != 1)
         {
@@ -274,9 +273,9 @@ public sealed partial class GlobalObject : ObjectInstance
     }
 
     private const string UriReservedString = ";/?:@&=+$,";
-    private const string UriUnescapedString = "-_.!~*'()";
-    private static readonly SearchValues<char> UriUnescaped = SearchValues.Create(UriUnescapedString);
-    private static readonly SearchValues<char> UnescapedUriSet = SearchValues.Create(UriReservedString + UriUnescapedString + '#');
+    private const string UriUnescapedString = "-.!~*'()";
+    private static readonly SearchValues<char> UriUnescaped = SearchValues.Create(Character.AsciiWordCharacters + UriUnescapedString);
+    private static readonly SearchValues<char> UnescapedUriSet = SearchValues.Create(Character.AsciiWordCharacters + UriReservedString + UriUnescapedString + '#');
     private static readonly SearchValues<char> ReservedUriSet = SearchValues.Create(UriReservedString + '#');
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -285,7 +284,7 @@ public sealed partial class GlobalObject : ObjectInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-encodeuri-uri
     /// </summary>
-    private JsValue EncodeUri(JsValue thisObject, JsValue[] arguments)
+    private JsValue EncodeUri(JsValue thisObject, JsCallArguments arguments)
     {
         var uriString = TypeConverter.ToString(arguments.At(0));
         return Encode(uriString, UnescapedUriSet);
@@ -294,29 +293,26 @@ public sealed partial class GlobalObject : ObjectInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-encodeuricomponent-uricomponent
     /// </summary>
-    private JsValue EncodeUriComponent(JsValue thisObject, JsValue[] arguments)
+    private JsValue EncodeUriComponent(JsValue thisObject, JsCallArguments arguments)
     {
         var uriString = TypeConverter.ToString(arguments.At(0));
 
         return Encode(uriString, UriUnescaped);
     }
 
-    private JsValue Encode(string uriString, SearchValues<char> unescapedUriSet)
+    [MethodImpl(512)]
+    private JsValue Encode(string uriString, SearchValues<char> allowedCharacters)
     {
-        const string HexaMap = "0123456789ABCDEF";
-
         var strLen = uriString.Length;
-
-        _stringBuilder.EnsureCapacity(uriString.Length);
-        _stringBuilder.Clear();
+        var builder = new ValueStringBuilder(uriString.Length);
         Span<byte> buffer = stackalloc byte[4];
 
         for (var k = 0; k < strLen; k++)
         {
             var c = uriString[k];
-            if (c is >= 'a' and <= 'z' || c is >= 'A' and <= 'Z' || c is >= '0' and <= '9' || unescapedUriSet.Contains(c))
+            if (allowedCharacters.Contains(c))
             {
-                _stringBuilder.Append(c);
+                builder.Append(c);
             }
             else
             {
@@ -386,35 +382,34 @@ public sealed partial class GlobalObject : ObjectInstance
 
                 for (var i = 0; i < length; i++)
                 {
-                    var octet = buffer[i];
-                    var x1 = HexaMap[octet / 16];
-                    var x2 = HexaMap[octet % 16];
-                    _stringBuilder.Append('%').Append(x1).Append(x2);
+                    builder.Append('%');
+                    builder.AppendHex(buffer[i]);
                 }
             }
         }
 
-        return _stringBuilder.ToString();
+        return builder.ToString();
 
-        uriError:
-        _engine.SignalError(ExceptionHelper.CreateUriError(_realm, "URI malformed"));
+uriError:
+        _engine.SignalError(Throw.CreateUriError(_realm, "URI malformed"));
         return JsEmpty.Instance;
     }
 
-    private JsValue DecodeUri(JsValue thisObject, JsValue[] arguments)
+    private JsValue DecodeUri(JsValue thisObject, JsCallArguments arguments)
     {
         var uriString = TypeConverter.ToString(arguments.At(0));
 
         return Decode(uriString, ReservedUriSet);
     }
 
-    private JsValue DecodeUriComponent(JsValue thisObject, JsValue[] arguments)
+    private JsValue DecodeUriComponent(JsValue thisObject, JsCallArguments arguments)
     {
         var componentString = TypeConverter.ToString(arguments.At(0));
 
         return Decode(componentString, null);
     }
 
+    [MethodImpl(512)]
     private JsValue Decode(string uriString, SearchValues<char>? reservedSet)
     {
         var strLen = uriString.Length;
@@ -423,7 +418,7 @@ public sealed partial class GlobalObject : ObjectInstance
         _stringBuilder.Clear();
 
 #if SUPPORTS_SPAN_PARSE
-            Span<byte> octets = stackalloc byte[4];
+        Span<byte> octets = stackalloc byte[4];
 #else
         var octets = new byte[4];
 #endif
@@ -455,7 +450,7 @@ public sealed partial class GlobalObject : ObjectInstance
                 k += 2;
                 if ((B & 0x80) == 0)
                 {
-                    C = (char)B;
+                    C = (char) B;
 #pragma warning disable CA2249
                     if (reservedSet == null || !reservedSet.Contains(C))
 #pragma warning restore CA2249
@@ -514,8 +509,56 @@ public sealed partial class GlobalObject : ObjectInstance
                         octets[j] = B;
                     }
 
+                    switch (n)
+                    {
+                        case 2:
+                            {
+                                // Overlong encoding check for 2-byte sequences
+                                var x = octets[0] & 0x1F; // 0x00
+                                var y = octets[1] & 0x3F; // 0x2F
+                                var codepoint = (x << 6) | y; // 0x2F
+
+                                if (codepoint < 0x80) // 2-byte should be ≥ 0x80
+                                {
+                                    goto uriError;
+                                }
+
+                                break;
+                            }
+                        case 3:
+                            {
+                                // Reserved surrogate pair (U+D800-DFFF)
+                                var x = octets[0] & 0x0F;
+                                var y = octets[1] & 0x3F;
+                                var z = octets[2] & 0x3F;
+                                var codepoint = (x << 12) | (y << 6) | z;
+
+                                if (codepoint is >= 0xD800 and <= 0xDFFF)
+                                {
+                                    goto uriError;
+                                }
+
+                                break;
+                            }
+                        case 4:
+                            {
+                                var x = octets[0] & 0x07;
+                                var y = octets[1] & 0x3F;
+                                var z = octets[2] & 0x3F;
+                                var w = octets[3] & 0x3F;
+                                var codepoint = (x << 18) | (y << 12) | (z << 6) | w;
+
+                                if (codepoint > 0x10FFFF)
+                                {
+                                    goto uriError;
+                                }
+
+                                break;
+                            }
+                    }
+
 #if SUPPORTS_SPAN_PARSE
-                        _stringBuilder.Append(Encoding.UTF8.GetString(octets.Slice(0, n)));
+                    _stringBuilder.Append(Encoding.UTF8.GetString(octets.Slice(0, n)));
 #else
                     _stringBuilder.Append(Encoding.UTF8.GetString(octets, 0, n));
 #endif
@@ -525,8 +568,8 @@ public sealed partial class GlobalObject : ObjectInstance
 
         return _stringBuilder.ToString();
 
-        uriError:
-        _engine.SignalError(ExceptionHelper.CreateUriError(_realm, "URI malformed"));
+uriError:
+        _engine.SignalError(Throw.CreateUriError(_realm, "URI malformed"));
         return JsEmpty.Instance;
     }
 
@@ -562,15 +605,15 @@ public sealed partial class GlobalObject : ObjectInstance
     private static bool IsDigit(char c, int radix, out int result)
     {
         int tmp;
-        if ((uint)(c - '0') <= 9)
+        if ((uint) (c - '0') <= 9)
         {
             result = tmp = c - '0';
         }
-        else if ((uint)(c - 'A') <= 'Z' - 'A')
+        else if ((uint) (c - 'A') <= 'Z' - 'A')
         {
             result = tmp = c - 'A' + 10;
         }
-        else if ((uint)(c - 'a') <= 'z' - 'a')
+        else if ((uint) (c - 'a') <= 'z' - 'a')
         {
             result = tmp = c - 'a' + 10;
         }
@@ -583,44 +626,42 @@ public sealed partial class GlobalObject : ObjectInstance
         return tmp < radix;
     }
 
-    private static readonly SearchValues<char> EscapeAllowList = SearchValues.Create("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789@*_ + -./");
+    private static readonly SearchValues<char> EscapeAllowList = SearchValues.Create(Character.AsciiWordCharacters + "@*+-./");
 
     /// <summary>
-    /// http://www.ecma-international.org/ecma-262/5.1/#sec-B.2.1
+    /// https://tc39.es/ecma262/#sec-escape-string
     /// </summary>
-    private JsValue Escape(JsValue thisObject, JsValue[] arguments)
+    private JsValue Escape(JsValue thisObject, JsCallArguments arguments)
     {
         var uriString = TypeConverter.ToString(arguments.At(0));
 
-        var strLen = uriString.Length;
+        var builder = new ValueStringBuilder(uriString.Length);
 
-        _stringBuilder.EnsureCapacity(strLen);
-        _stringBuilder.Clear();
-
-        for (var k = 0; k < strLen; k++)
+        foreach (var c in uriString)
         {
-            var c = uriString[k];
             if (EscapeAllowList.Contains(c))
             {
-                _stringBuilder.Append(c);
+                builder.Append(c);
             }
             else if (c < 256)
             {
-                _stringBuilder.Append('%').AppendFormat(CultureInfo.InvariantCulture, "{0:X2}", (int) c);
+                builder.Append('%');
+                builder.AppendHex((byte) c);
             }
             else
             {
-                _stringBuilder.Append("%u").AppendFormat(CultureInfo.InvariantCulture, "{0:X4}", (int) c);
+                builder.Append("%u");
+                builder.Append(((int) c).ToString("X4", CultureInfo.InvariantCulture));
             }
         }
 
-        return _stringBuilder.ToString();
+        return builder.ToString();
     }
 
     /// <summary>
     /// http://www.ecma-international.org/ecma-262/5.1/#sec-B.2.2
     /// </summary>
-    private JsValue Unescape(JsValue thisObject, JsValue[] arguments)
+    private JsValue Unescape(JsValue thisObject, JsCallArguments arguments)
     {
         var uriString = TypeConverter.ToString(arguments.At(0));
 
@@ -636,19 +677,14 @@ public sealed partial class GlobalObject : ObjectInstance
             {
                 if (k <= strLen - 6
                     && uriString[k + 1] == 'u'
-                    && uriString.Skip(k + 2).Take(4).All(IsValidHexaChar))
+                    && AreValidHexChars(uriString.AsSpan(k + 2, 4)))
                 {
-                    var joined = string.Join(string.Empty, uriString.Skip(k + 2).Take(4));
-                    c = (char) int.Parse(joined, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture);
-
+                    c = ParseHexString(uriString.AsSpan(k + 2, 4));
                     k += 5;
                 }
-                else if (k <= strLen - 3
-                         && uriString.Skip(k + 1).Take(2).All(IsValidHexaChar))
+                else if (k <= strLen - 3 && AreValidHexChars(uriString.AsSpan(k + 1, 2)))
                 {
-                    var joined = string.Join(string.Empty, uriString.Skip(k + 1).Take(2));
-                    c = (char) int.Parse(joined, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture);
-
+                    c = ParseHexString(uriString.AsSpan(k + 1, 2));
                     k += 2;
                 }
             }
@@ -656,6 +692,30 @@ public sealed partial class GlobalObject : ObjectInstance
         }
 
         return _stringBuilder.ToString();
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static bool AreValidHexChars(ReadOnlySpan<char> input)
+        {
+            foreach (var c in input)
+            {
+                if (!IsValidHexaChar(c))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static char ParseHexString(ReadOnlySpan<char> input)
+        {
+#if NET6_0_OR_GREATER
+            return (char) int.Parse(input, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture);
+#else
+            return (char) int.Parse(input.ToString(), NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture);
+#endif
+        }
     }
 
     // optimized versions with string parameter and without virtual dispatch for global environment usage
@@ -699,7 +759,7 @@ public sealed partial class GlobalObject : ObjectInstance
         {
             if (strict)
             {
-                ExceptionHelper.ThrowReferenceNameError(_realm, property.Name);
+                Throw.ReferenceNameError(_realm, property.Name);
             }
             _properties[property] = new PropertyDescriptor(value, PropertyFlag.ConfigurableEnumerableWritable | PropertyFlag.MutableBinding);
             return true;
@@ -728,7 +788,7 @@ public sealed partial class GlobalObject : ObjectInstance
             return false;
         }
 
-        setter.Call(this, new[] {value});
+        setter.Call(this, value);
 
         return true;
     }

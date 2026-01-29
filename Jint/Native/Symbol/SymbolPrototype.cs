@@ -1,6 +1,5 @@
 #pragma warning disable CA1859 // Use concrete types when possible for improved performance -- most of prototype methods return JsValue
 
-using Jint.Collections;
 using Jint.Native.Object;
 using Jint.Runtime;
 using Jint.Runtime.Descriptors;
@@ -40,16 +39,17 @@ internal sealed class SymbolPrototype : Prototype
         });
 
         SetSymbols(new SymbolDictionary(1)
-            {
-                [GlobalSymbolRegistry.ToPrimitive] = new PropertyDescriptor(new ClrFunction(Engine, "[Symbol.toPrimitive]", ToPrimitive, 1, lengthFlags), propertyFlags), [GlobalSymbolRegistry.ToStringTag] = new PropertyDescriptor(new JsString("Symbol"), propertyFlags)
-            }
+        {
+            [GlobalSymbolRegistry.ToPrimitive] = new PropertyDescriptor(new ClrFunction(Engine, "[Symbol.toPrimitive]", ToPrimitive, 1, lengthFlags), propertyFlags),
+            [GlobalSymbolRegistry.ToStringTag] = new PropertyDescriptor(new JsString("Symbol"), propertyFlags)
+        }
         );
     }
 
     /// <summary>
     /// https://tc39.es/ecma262/#sec-symbol.prototype.description
     /// </summary>
-    private JsValue Description(JsValue thisObject, JsValue[] arguments)
+    private JsValue Description(JsValue thisObject, JsCallArguments arguments)
     {
         var sym = ThisSymbolValue(thisObject);
         return sym._value;
@@ -58,7 +58,7 @@ internal sealed class SymbolPrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-symbol.prototype.tostring
     /// </summary>
-    private JsValue ToSymbolString(JsValue thisObject, JsValue[] arguments)
+    private JsValue ToSymbolString(JsValue thisObject, JsCallArguments arguments)
     {
         var sym = ThisSymbolValue(thisObject);
         return new JsString(sym.ToString());
@@ -67,7 +67,7 @@ internal sealed class SymbolPrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-symbol.prototype.valueof
     /// </summary>
-    private JsValue ValueOf(JsValue thisObject, JsValue[] arguments)
+    private JsValue ValueOf(JsValue thisObject, JsCallArguments arguments)
     {
         return ThisSymbolValue(thisObject);
     }
@@ -75,7 +75,7 @@ internal sealed class SymbolPrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-symbol.prototype-@@toprimitive
     /// </summary>
-    private JsValue ToPrimitive(JsValue thisObject, JsValue[] arguments)
+    private JsValue ToPrimitive(JsValue thisObject, JsCallArguments arguments)
     {
         return ThisSymbolValue(thisObject);
     }
@@ -92,7 +92,7 @@ internal sealed class SymbolPrototype : Prototype
             return instance.SymbolData;
         }
 
-        ExceptionHelper.ThrowTypeError(_realm);
+        Throw.TypeError(_realm);
         return null;
     }
 }

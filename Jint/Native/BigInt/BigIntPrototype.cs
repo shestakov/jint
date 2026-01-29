@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Numerics;
 using System.Text;
-using Jint.Collections;
+using Jint.Native.Intl;
 using Jint.Native.Object;
 using Jint.Native.Symbol;
 using Jint.Runtime;
@@ -48,21 +48,24 @@ internal sealed class BigIntPrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma402/#sup-bigint.prototype.tolocalestring
     /// </summary>
-    private JsValue ToLocaleString(JsValue thisObject, JsValue[] arguments)
+    private JsValue ToLocaleString(JsValue thisObject, JsCallArguments arguments)
     {
         var locales = arguments.At(0);
         var options = arguments.At(1);
 
         var x = ThisBigIntValue(thisObject);
-        //var numberFormat = (NumberFormat) Construct(_realm.Intrinsics.NumberFormat, new[] {  locales, options });
-        // numberFormat.FormatNumeric(x);
-        return x._value.ToString("R", CultureInfo.InvariantCulture);
+
+        // Use Intl.NumberFormat for locale-aware formatting
+        var numberFormat = (JsNumberFormat) Engine.Realm.Intrinsics.NumberFormat.Construct([locales, options], Engine.Realm.Intrinsics.NumberFormat);
+
+        // Use BigInteger overload to avoid precision loss
+        return numberFormat.Format(x._value);
     }
 
     /// <summary>
     /// https://tc39.es/ecma262/#sec-bigint.prototype.valueof
     /// </summary>
-    private JsValue ValueOf(JsValue thisObject, JsValue[] arguments)
+    private JsValue ValueOf(JsValue thisObject, JsCallArguments arguments)
     {
         if (thisObject is BigIntInstance ni)
         {
@@ -74,14 +77,14 @@ internal sealed class BigIntPrototype : Prototype
             return thisObject;
         }
 
-        ExceptionHelper.ThrowTypeError(_realm);
+        Throw.TypeError(_realm);
         return null;
     }
 
     /// <summary>
     /// https://tc39.es/ecma262/#sec-bigint.prototype.tostring
     /// </summary>
-    private JsValue ToBigIntString(JsValue thisObject, JsValue[] arguments)
+    private JsValue ToBigIntString(JsValue thisObject, JsCallArguments arguments)
     {
         var x = ThisBigIntValue(thisObject);
 
@@ -93,7 +96,7 @@ internal sealed class BigIntPrototype : Prototype
 
         if (radixMV is < 2 or > 36)
         {
-            ExceptionHelper.ThrowRangeError(_realm, "radix must be between 2 and 36");
+            Throw.RangeError(_realm, "radix must be between 2 and 36");
         }
 
         var value = x._value;
@@ -146,7 +149,7 @@ internal sealed class BigIntPrototype : Prototype
             case BigIntInstance bigIntInstance:
                 return bigIntInstance.BigIntData;
             default:
-                ExceptionHelper.ThrowTypeError(_realm);
+                Throw.TypeError(_realm);
                 return default;
         }
     }

@@ -40,7 +40,7 @@ public sealed class ShadowRealm : ObjectInstance
     {
         if (!preparedScript.IsValid)
         {
-            ExceptionHelper.ThrowInvalidPreparedScriptArgumentException(nameof(preparedScript));
+            Throw.InvalidPreparedScriptArgumentException(nameof(preparedScript));
         }
 
         var callerRealm = _engine.Realm;
@@ -116,11 +116,11 @@ public sealed class ShadowRealm : ObjectInstance
         {
             if (string.Equals(e.Error.Code, "InvalidLhsInAssignment", StringComparison.Ordinal))
             {
-                ExceptionHelper.ThrowReferenceError(callerRealm, e.Description);
+                Throw.ReferenceError(callerRealm, e.Description);
             }
             else
             {
-                ExceptionHelper.ThrowSyntaxError(callerRealm, e.Message);
+                Throw.SyntaxError(callerRealm, e.Message);
             }
 
             return default;
@@ -311,7 +311,7 @@ public sealed class ShadowRealm : ObjectInstance
             SetFunctionLength(JsNumber.PositiveOne);
         }
 
-        protected internal override JsValue Call(JsValue thisObject, JsValue[] arguments)
+        protected internal override JsValue Call(JsValue thisObject, JsCallArguments arguments)
         {
             var exports = (ModuleNamespace) arguments.At(0);
             var f = this;
@@ -319,7 +319,7 @@ public sealed class ShadowRealm : ObjectInstance
             var hasOwn = exports.HasOwnProperty(s);
             if (!hasOwn)
             {
-                ExceptionHelper.ThrowTypeError(_realm, $"export name {s} missing");
+                Throw.TypeError(_realm, $"export name {s} missing");
             }
 
             var value = exports.Get(s);
@@ -333,7 +333,7 @@ public sealed class ShadowRealm : ObjectInstance
         var instance = thisObj as ShadowRealm;
         if (instance is null)
         {
-            ExceptionHelper.ThrowTypeError(callerRealm, "object must be a ShadowRealm");
+            Throw.TypeError(callerRealm, "object must be a ShadowRealm");
         }
 
         return instance;
@@ -341,7 +341,7 @@ public sealed class ShadowRealm : ObjectInstance
 
     private static void ThrowCrossRealmError(Realm callerRealm, string message)
     {
-        ExceptionHelper.ThrowTypeError(callerRealm, "Cross-Realm Error: " + message);
+        Throw.TypeError(callerRealm, "Cross-Realm Error: " + message);
     }
 
     private sealed class WrappedFunction : Function.Function
@@ -360,7 +360,7 @@ public sealed class ShadowRealm : ObjectInstance
         /// <summary>
         /// https://tc39.es/proposal-shadowrealm/#sec-wrapped-function-exotic-objects-call-thisargument-argumentslist
         /// </summary>
-        protected internal override JsValue Call(JsValue thisArgument, JsValue[] arguments)
+        protected internal override JsValue Call(JsValue thisArgument, JsCallArguments arguments)
         {
             var target = _wrappedTargetFunction;
             var targetRealm = GetFunctionRealm(target);
@@ -405,7 +405,7 @@ public sealed class ShadowRealm : ObjectInstance
 
         protected override object? VisitSuper(Super super)
         {
-            ExceptionHelper.ThrowTypeError(_realm, "Shadow realm code cannot contain super");
+            Throw.TypeError(_realm, "Shadow realm code cannot contain super");
             return null;
         }
     }
