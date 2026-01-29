@@ -103,7 +103,7 @@ internal sealed class MethodDescriptor
         return descriptors;
     }
 
-    public JsValue Call(Engine engine, object? instance, JsValue[] arguments)
+    public JsValue Call(Engine engine, object? instance, JsCallArguments arguments)
     {
         var parameters = new object?[arguments.Length];
         var methodParameters = Parameters;
@@ -124,7 +124,7 @@ internal sealed class MethodDescriptor
                 }
                 else if (value.IsUndefined() && methodParameter.IsOptional)
                 {
-                    // undefined is considered missing, null is consider explicit value
+                    // undefined is considered missing, null is considered explicit value
                     converted = methodParameter.DefaultValue;
                 }
                 else if (!ReflectionExtensions.TryConvertViaTypeCoercion(parameterType, valueCoercionType, value, out converted))
@@ -138,24 +138,17 @@ internal sealed class MethodDescriptor
                 parameters[i] = converted;
             }
 
-            if (Method is MethodInfo m)
+            var retVal = Method switch
             {
-                var retVal = m.Invoke(instance, parameters);
-                return JsValue.FromObject(engine, retVal);
-            }
-            else if (Method is ConstructorInfo c)
-            {
-                var retVal = c.Invoke(parameters);
-                return JsValue.FromObject(engine, retVal);
-            }
-            else
-            {
-                throw new NotSupportedException("Method is unknown type");
-            }
+                MethodInfo m => m.Invoke(instance, parameters),
+                ConstructorInfo c => c.Invoke(parameters),
+                _ => throw new NotSupportedException("Method is unknown type"),
+            };
+            return JsValue.FromObject(engine, retVal);
         }
         catch (TargetInvocationException exception)
         {
-            ExceptionHelper.ThrowMeaningfulException(engine, exception);
+            Throw.MeaningfulException(engine, exception);
             return null;
         }
     }

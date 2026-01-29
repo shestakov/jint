@@ -7,6 +7,7 @@ using Jint.Native.BigInt;
 using Jint.Native.Boolean;
 using Jint.Native.Json;
 using Jint.Native.Number;
+using Jint.Native.Promise;
 using Jint.Native.String;
 using Jint.Native.Symbol;
 using Jint.Native.TypedArray;
@@ -97,12 +98,22 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
     /// <summary>
     /// https://tc39.es/ecma262/#sec-construct
     /// </summary>
-    internal static ObjectInstance Construct(IConstructor f, JsValue[]? argumentsList = null, IConstructor? newTarget = null)
+    internal static ObjectInstance Construct(IConstructor f, IConstructor? newTarget, JsCallArguments argumentsList)
     {
         newTarget ??= f;
-        argumentsList ??= System.Array.Empty<JsValue>();
         return f.Construct(argumentsList, (JsValue) newTarget);
     }
+
+    internal static ObjectInstance Construct(IConstructor f, JsCallArguments argumentsList)
+    {
+        return f.Construct(argumentsList, (JsValue) f);
+    }
+
+    internal static ObjectInstance Construct(IConstructor f)
+    {
+        return f.Construct([], (JsValue) f);
+    }
+
 
     /// <summary>
     /// https://tc39.es/ecma262/#sec-speciesconstructor
@@ -118,7 +129,7 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
         var oi = c as ObjectInstance;
         if (oi is null)
         {
-            ExceptionHelper.ThrowTypeError(o._engine.Realm);
+            Throw.TypeError(o._engine.Realm);
         }
 
         var s = oi.Get(GlobalSymbolRegistry.Species);
@@ -132,7 +143,7 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
             return (IConstructor) s;
         }
 
-        ExceptionHelper.ThrowTypeError(o._engine.Realm);
+        Throw.TypeError(o._engine.Realm);
         return null;
     }
 
@@ -317,7 +328,7 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
         return keys;
     }
 
-    internal virtual IEnumerable<JsValue> GetInitialOwnStringPropertyKeys() => System.Linq.Enumerable.Empty<JsValue>();
+    internal virtual IEnumerable<JsValue> GetInitialOwnStringPropertyKeys() => [];
 
     protected virtual bool TryGetProperty(JsValue property, [NotNullWhen(true)] out PropertyDescriptor? descriptor)
     {
@@ -354,21 +365,22 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
 
     public override JsValue Get(JsValue property, JsValue receiver)
     {
-        if ((_type & InternalTypes.PlainObject) != InternalTypes.Empty && ReferenceEquals(this, receiver) && property is JsString jsString)
+        if ((_type & InternalTypes.PlainObject) != InternalTypes.Empty && ReferenceEquals(this, receiver) && property.IsString())
         {
             EnsureInitialized();
-            if (_properties?.TryGetValue(jsString.ToString(), out var ownDesc) == true)
+            if (_properties?.TryGetValue(property.ToString(), out var ownDesc) == true)
             {
                 return UnwrapJsValue(ownDesc, receiver);
             }
+
+            return Prototype?.Get(property, receiver) ?? Undefined;
         }
-        else
+
+        // slow path
+        var desc = GetOwnProperty(property);
+        if (desc != PropertyDescriptor.Undefined)
         {
-            var desc = GetOwnProperty(property);
-            if (desc != PropertyDescriptor.Undefined)
-            {
-                return UnwrapJsValue(desc, receiver);
-            }
+            return UnwrapJsValue(desc, receiver);
         }
 
         return Prototype?.Get(property, receiver) ?? Undefined;
@@ -475,7 +487,7 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
     {
         if (!Set(p, v) && throwOnError)
         {
-            ExceptionHelper.ThrowTypeError(_engine.Realm);
+            Throw.TypeError(_engine.Realm);
         }
 
         return true;
@@ -506,15 +518,23 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
     /// </summary>
     public override bool Set(JsValue property, JsValue value, JsValue receiver)
     {
-        if ((_type & InternalTypes.PlainObject) != InternalTypes.Empty && ReferenceEquals(this, receiver) && property is JsString jsString)
+        if ((_type & InternalTypes.PlainObject) != InternalTypes.Empty && ReferenceEquals(this, receiver) && property.IsString())
         {
-            var key = (Key) jsString.ToString();
+            var key = (Key) property.ToString();
             if (_properties?.TryGetValue(key, out var ownDesc) == true)
             {
                 if ((ownDesc._flags & PropertyFlag.Writable) != PropertyFlag.None)
                 {
                     ownDesc._value = value;
                     return true;
+                }
+            }
+            else
+            {
+                var parent = GetPrototypeOf();
+                if (parent is not null)
+                {
+                    return parent.Set(property, value, receiver);
                 }
             }
         }
@@ -577,10 +597,9 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
             return false;
         }
 
-        _engine.Call(setter, receiver, new[]
-        {
+        _engine.Call(setter, receiver, [
             value
-        }, expression: null);
+        ], expression: null);
 
         return true;
     }
@@ -670,7 +689,7 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
     {
         if (!Delete(property))
         {
-            ExceptionHelper.ThrowTypeError(_engine.Realm);
+            Throw.TypeError(_engine.Realm);
         }
         return true;
     }
@@ -702,7 +721,7 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
     {
         if (!DefineOwnProperty(property, desc))
         {
-            ExceptionHelper.ThrowTypeError(_engine.Realm, "Cannot redefine property: " + property);
+            Throw.TypeError(_engine.Realm, "Cannot redefine property: " + property);
         }
 
         return true;
@@ -972,7 +991,7 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
             case ObjectClass.Boolean:
                 if (this is BooleanInstance booleanInstance)
                 {
-                    converted = ((JsBoolean) booleanInstance.BooleanData)._value
+                    converted = booleanInstance.BooleanData._value
                         ? JsBoolean.BoxedTrue
                         : JsBoolean.BoxedFalse;
                 }
@@ -981,7 +1000,7 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
             case ObjectClass.Function:
                 if (this is ICallable function)
                 {
-                    converted = (Func<JsValue, JsValue[], JsValue>) function.Call;
+                    converted = (JsCallDelegate) function.Call;
                 }
 
                 break;
@@ -1003,6 +1022,18 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
             case ObjectClass.Arguments:
             case ObjectClass.Object:
 
+                if ((Engine.Options.ExperimentalFeatures & ExperimentalFeature.TaskInterop) != ExperimentalFeature.None)
+                {
+                    if (this is JsPromise asPromise)
+                    {
+                        var promsiseResult = asPromise.UnwrapIfPromise(Engine.Options.Constraints.PromiseTimeout);
+
+                        converted = promsiseResult is ObjectInstance oi
+                                    ? oi.ToObject(stack)
+                                    : promsiseResult.ToObject();
+                        break;
+                    }
+                }
                 if (this is JsArray arrayInstance)
                 {
                     var result = new object?[arrayInstance.GetLength()];
@@ -1030,6 +1061,9 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
                         TypedArrayElementType.Int16 => typedArrayInstance.ToNativeArray<short>(),
                         TypedArrayElementType.Int32 => typedArrayInstance.ToNativeArray<int>(),
                         TypedArrayElementType.BigInt64 => typedArrayInstance.ToNativeArray<long>(),
+#if SUPPORTS_HALF
+                        TypedArrayElementType.Float16 => typedArrayInstance.ToNativeArray<Half>(),
+#endif
                         TypedArrayElementType.Float32 => typedArrayInstance.ToNativeArray<float>(),
                         TypedArrayElementType.Float64 => typedArrayInstance.ToNativeArray<double>(),
                         TypedArrayElementType.Uint8 => typedArrayInstance.ToNativeArray<byte>(),
@@ -1104,7 +1138,7 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
     /// Handles the generic find of (callback[, thisArg])
     /// </summary>
     internal virtual bool FindWithCallback(
-        JsValue[] arguments,
+        JsCallArguments arguments,
         out ulong index,
         out JsValue value,
         bool visitUnassigned,
@@ -1217,6 +1251,9 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
 
     internal virtual uint GetLength() => (uint) TypeConverter.ToLength(Get(CommonProperties.Length));
 
+    /// <summary>
+    /// https://tc39.es/ecma262/#sec-ordinarypreventextensions
+    /// </summary>
     public virtual bool PreventExtensions()
     {
         Extensible = false;
@@ -1235,7 +1272,7 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
     {
         if (!value.IsObject() && !value.IsNull())
         {
-            ExceptionHelper.ThrowArgumentException();
+            Throw.ArgumentException();
         }
 
         var current = _prototype ?? Null;
@@ -1323,7 +1360,7 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
     {
         if (!CreateDataProperty(p, v))
         {
-            ExceptionHelper.ThrowTypeError(_engine.Realm);
+            Throw.TypeError(_engine.Realm);
         }
 
         return true;
@@ -1356,21 +1393,41 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
         return GetMethod(_engine.Realm, this, property);
     }
 
-    internal static ICallable? GetMethod(Realm realm, JsValue v, JsValue p)
+    internal ICallable? GetDisposeMethod(DisposeHint hint)
     {
-        var jsValue = v.Get(p);
-        if (jsValue.IsNullOrUndefined())
+        if (hint == DisposeHint.Async)
         {
-            return null;
+            var method = GetMethod(GlobalSymbolRegistry.AsyncDispose);
+            if (method is null)
+            {
+                method = GetMethod(GlobalSymbolRegistry.Dispose);
+                if (method is not null)
+                {
+                    JsCallDelegate closure = (_, _) =>
+                    {
+                        var promiseCapability = PromiseConstructor.NewPromiseCapability(_engine, _engine.Intrinsics.Promise);
+                        try
+                        {
+                            method.Call(this);
+                            promiseCapability.Resolve.Call(Undefined, Undefined);
+                        }
+                        catch
+                        {
+                            promiseCapability.Reject.Call(Undefined, Undefined);
+                        }
+                        return promiseCapability.PromiseInstance;
+                    };
+
+                    return new ClrFunction(_engine, string.Empty, closure);
+                }
+            }
+
+            return method;
         }
 
-        var callable = jsValue as ICallable;
-        if (callable is null)
-        {
-            ExceptionHelper.ThrowTypeError(realm, "Value returned for property '" + p + "' of object is not a function");
-        }
-        return callable;
+        return GetMethod(GlobalSymbolRegistry.Dispose);
     }
+
 
     internal void CopyDataProperties(
         ObjectInstance target,
@@ -1385,7 +1442,8 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
                 var desc = GetOwnProperty(key);
                 if (desc.Enumerable)
                 {
-                    target.CreateDataProperty(key, UnwrapJsValue(desc, this));
+                    var propValue = Get(key);
+                    target.CreateDataProperty(key, propValue);
                 }
             }
         }
@@ -1458,7 +1516,7 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void ThrowIncompatibleReceiver(JsValue value, string methodName)
     {
-        ExceptionHelper.ThrowTypeError(_engine.Realm, $"Method {methodName} called on incompatible receiver {value}");
+        Throw.TypeError(_engine.Realm, $"Method {methodName} called on incompatible receiver {value}");
     }
 
     public override bool Equals(object? obj) => Equals(obj as ObjectInstance);
@@ -1551,12 +1609,12 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
     /// <summary>
     /// https://tc39.es/ecma262/#sec-invoke
     /// </summary>
-    internal JsValue Invoke(JsValue v, JsValue p, JsValue[] arguments)
+    internal JsValue Invoke(JsValue v, JsValue p, JsCallArguments arguments)
     {
         var func = v.GetV(_engine.Realm, p);
         if (func is not ICallable callable)
         {
-            ExceptionHelper.ThrowTypeError(_engine.Realm, "Can only invoke functions");
+            Throw.TypeError(_engine.Realm, "Can only invoke functions");
             return default;
         }
 

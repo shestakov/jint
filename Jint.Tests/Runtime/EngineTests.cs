@@ -7,7 +7,6 @@ using Jint.Native.Object;
 using Jint.Runtime;
 using Jint.Runtime.Debugger;
 using Jint.Tests.Runtime.Debugger;
-using Xunit.Abstractions;
 
 #pragma warning disable 618
 
@@ -594,6 +593,21 @@ public partial class EngineTests : IDisposable
         RunTest(@"
                 var x = 0;
                 eval('assert(x == 0)');
+            ");
+    }
+
+    [Fact]
+    public void EvalFunctionWithTargetNewParse()
+    {
+        RunTest(@"
+                const code = `function MyClass() {
+                   if (!new.target) throw new Error('Use MyClass as constructor!');
+                }`;
+                eval(code);
+                const code2 = `var x = function () {
+                   if (!new.target) throw new Error('Use as constructor!');
+                }`;
+                eval(code2);
             ");
     }
 
@@ -1187,12 +1201,12 @@ public partial class EngineTests : IDisposable
     {
         get
         {
-            yield return new object[] { new DateTime(2000, 1, 1) };
-            yield return new object[] { new DateTime(2000, 1, 1, 0, 15, 15, 15) };
-            yield return new object[] { new DateTime(2000, 6, 1, 0, 15, 15, 15) };
-            yield return new object[] { new DateTime(1900, 1, 1) };
-            yield return new object[] { new DateTime(1900, 1, 1, 0, 15, 15, 15) };
-            yield return new object[] { new DateTime(1900, 6, 1, 0, 15, 15, 15) };
+            yield return [new DateTime(2000, 1, 1)];
+            yield return [new DateTime(2000, 1, 1, 0, 15, 15, 15)];
+            yield return [new DateTime(2000, 6, 1, 0, 15, 15, 15)];
+            yield return [new DateTime(1900, 1, 1)];
+            yield return [new DateTime(1900, 1, 1, 0, 15, 15, 15)];
+            yield return [new DateTime(1900, 6, 1, 0, 15, 15, 15)];
         }
     }
 
@@ -1836,9 +1850,10 @@ var prep = function (fn) { fn(); };
                     equal('Mon Jun 01 2015 05:00:00 GMT-0700 (Pacific Standard Time)', d.toString());
                     equal('Mon Jun 01 2015', d.toDateString());
                     equal('05:00:00 GMT-0700 (Pacific Standard Time)', d.toTimeString());
-                    equal('lundi 1 juin 2015 05:00:00', d.toLocaleString());
-                    equal('lundi 1 juin 2015', d.toLocaleDateString());
-                    equal('05:00:00', d.toLocaleTimeString());
+                    // ECMA-402 compliant: numeric defaults used when no options specified
+                    equal('1/6/2015 5:00:00', d.toLocaleString());
+                    equal('1/6/2015', d.toLocaleDateString());
+                    equal('5:00:00', d.toLocaleTimeString());
             ");
     }
 

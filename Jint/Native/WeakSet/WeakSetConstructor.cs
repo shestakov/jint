@@ -24,11 +24,11 @@ internal sealed class WeakSetConstructor : Constructor
 
     private WeakSetPrototype PrototypeObject { get; }
 
-    public override ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
+    public override ObjectInstance Construct(JsCallArguments arguments, JsValue newTarget)
     {
         if (newTarget.IsUndefined())
         {
-            ExceptionHelper.ThrowTypeError(_realm);
+            Throw.TypeError(_realm);
         }
 
         var set = OrdinaryCreateFromConstructor(
@@ -54,7 +54,7 @@ internal sealed class WeakSetConstructor : Constructor
 
             if (adder is null)
             {
-                ExceptionHelper.ThrowTypeError(_realm, "add must be callable");
+                Throw.TypeError(_realm, "add must be callable");
             }
 
             var iterable = arguments.At(0).GetIterator(_realm);

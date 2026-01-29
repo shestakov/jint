@@ -32,7 +32,7 @@ internal sealed class FunctionEnvironment : DeclarativeEnvironment
     {
         _functionObject = functionObject;
         NewTarget = newTarget;
-        if (functionObject._functionDefinition?.Function is ArrowFunctionExpression)
+        if (functionObject._functionDefinition?.Function.Type is NodeType.ArrowFunctionExpression)
         {
             _thisBindingStatus = ThisBindingStatus.Lexical;
         }
@@ -57,7 +57,7 @@ internal sealed class FunctionEnvironment : DeclarativeEnvironment
             return value;
         }
 
-        ExceptionHelper.ThrowReferenceError(_functionObject._realm, "'this' has already been bound");
+        Throw.ReferenceError(_functionObject._realm, "'this' has already been bound");
         return null!;
     }
 
@@ -82,7 +82,7 @@ internal sealed class FunctionEnvironment : DeclarativeEnvironment
             message = "Must call super constructor in derived class before accessing 'this' or returning from derived constructor";
         }
 
-        ExceptionHelper.ThrowReferenceError(_engine.ExecutionContext.Realm, message);
+        Throw.ReferenceError(_engine.ExecutionContext.Realm, message);
     }
 
     public JsValue GetSuperBase()
@@ -98,7 +98,7 @@ internal sealed class FunctionEnvironment : DeclarativeEnvironment
     internal void InitializeParameters(
         Key[] parameterNames,
         bool hasDuplicates,
-        JsValue[]? arguments)
+        JsCallArguments? arguments)
     {
         if (parameterNames.Length == 0)
         {
@@ -107,24 +107,22 @@ internal sealed class FunctionEnvironment : DeclarativeEnvironment
 
         var value = hasDuplicates ? Undefined : null;
         var directSet = !hasDuplicates && (_dictionary is null || _dictionary.Count == 0);
+        _dictionary ??= new HybridDictionary<Binding>(parameterNames.Length, checkExistingKeys: !directSet);
         for (uint i = 0; i < (uint) parameterNames.Length; i++)
         {
             var paramName = parameterNames[i];
-            if (directSet || _dictionary is null || !_dictionary.ContainsKey(paramName))
+            ref var binding = ref _dictionary.GetValueRefOrAddDefault(paramName, out var exists);
+            if (directSet || !exists)
             {
-                var parameterValue = value;
-                if (arguments != null)
-                {
-                    parameterValue = i < (uint) arguments.Length ? arguments[i] : Undefined;
-                }
-
-                _dictionary ??= new HybridDictionary<Binding>();
-                _dictionary[paramName] = new Binding(parameterValue!, canBeDeleted: false, mutable: true, strict: false);
+                var parameterValue = arguments?.At((int) i, Undefined) ?? value;
+                binding = new Binding(parameterValue!, canBeDeleted: false, mutable: true, strict: false);
             }
         }
+
+        _dictionary.CheckExistingKeys = true;
     }
 
-    internal void AddFunctionParameters(EvaluationContext context, IFunction functionDeclaration, JsValue[] arguments)
+    internal void AddFunctionParameters(EvaluationContext context, IFunction functionDeclaration, JsCallArguments arguments)
     {
         var empty = _dictionary is null || _dictionary.Count == 0;
         ref readonly var parameters = ref functionDeclaration.Params;
@@ -139,7 +137,7 @@ internal sealed class FunctionEnvironment : DeclarativeEnvironment
     private void SetFunctionParameter(
         EvaluationContext context,
         Node? parameter,
-        JsValue[] arguments,
+        JsCallArguments arguments,
         int index,
         bool initiallyEmpty)
     {
@@ -157,7 +155,7 @@ internal sealed class FunctionEnvironment : DeclarativeEnvironment
     private void SetFunctionParameterUnlikely(
         EvaluationContext context,
         Node? parameter,
-        JsValue[] arguments,
+        JsCallArguments arguments,
         int index,
         bool initiallyEmpty)
     {
@@ -189,10 +187,10 @@ internal sealed class FunctionEnvironment : DeclarativeEnvironment
     {
         if (argument.IsNullOrUndefined())
         {
-            ExceptionHelper.ThrowTypeError(_functionObject._realm, "Destructed parameter is null or undefined");
+            Throw.TypeError(_functionObject._realm, "Destructed parameter is null or undefined");
         }
 
-        var argumentObject = TypeConverter.ToObject(_engine.Realm , argument);
+        var argumentObject = TypeConverter.ToObject(_engine.Realm, argument);
 
         ref readonly var properties = ref objectPattern.Properties;
         var processedProperties = properties.Count > 0 && properties[properties.Count - 1] is RestElement
@@ -202,37 +200,27 @@ internal sealed class FunctionEnvironment : DeclarativeEnvironment
         var jsValues = _engine._jsValueArrayPool.RentArray(1);
         foreach (var property in properties)
         {
-            var oldEnv = _engine.ExecutionContext.LexicalEnvironment;
-            var paramVarEnv = JintEnvironment.NewDeclarativeEnvironment(_engine, oldEnv);
-            PrivateEnvironment? privateEnvironment = null; // TODO PRIVATE check when implemented
-            _engine.EnterExecutionContext(paramVarEnv, paramVarEnv, _engine.ExecutionContext.Realm, privateEnvironment);
-
-            try
+            // Evaluate property access in the current execution context.
+            // The VariableEnvironment has already been set up correctly for eval in FunctionDeclarationInstantiation.
+            if (property is AssignmentProperty p)
             {
-                if (property is AssignmentProperty p)
+                var propertyName = p.GetKey(_engine);
+                processedProperties?.Add(propertyName.ToString());
+                jsValues[0] = argumentObject.Get(propertyName);
+                SetFunctionParameter(context, p.Value, jsValues, 0, initiallyEmpty);
+            }
+            else
+            {
+                if (((RestElement) property).Argument is Identifier restIdentifier)
                 {
-                    var propertyName = p.GetKey(_engine);
-                    processedProperties?.Add(propertyName.ToString());
-                    jsValues[0] = argumentObject.Get(propertyName);
-                    SetFunctionParameter(context, p.Value, jsValues, 0, initiallyEmpty);
+                    var rest = _engine.Realm.Intrinsics.Object.Construct((argumentObject.Properties?.Count ?? 0) - processedProperties!.Count);
+                    argumentObject.CopyDataProperties(rest, processedProperties);
+                    SetItemSafely(restIdentifier.Name, rest, initiallyEmpty);
                 }
                 else
                 {
-                    if (((RestElement) property).Argument is Identifier restIdentifier)
-                    {
-                        var rest = _engine.Realm.Intrinsics.Object.Construct((argumentObject.Properties?.Count ?? 0) - processedProperties!.Count);
-                        argumentObject.CopyDataProperties(rest, processedProperties);
-                        SetItemSafely(restIdentifier.Name, rest, initiallyEmpty);
-                    }
-                    else
-                    {
-                        ExceptionHelper.ThrowSyntaxError(_functionObject._realm, "Object rest parameter can only be objects");
-                    }
+                    Throw.SyntaxError(_functionObject._realm, "Object rest parameter can only be objects");
                 }
-            }
-            finally
-            {
-                _engine.LeaveExecutionContext();
             }
         }
 
@@ -243,7 +231,7 @@ internal sealed class FunctionEnvironment : DeclarativeEnvironment
     {
         if (argument.IsNull())
         {
-            ExceptionHelper.ThrowTypeError(_functionObject._realm, "Destructed parameter is null");
+            Throw.TypeError(_functionObject._realm, "Destructed parameter is null");
         }
 
         JsArray? array;
@@ -255,7 +243,7 @@ internal sealed class FunctionEnvironment : DeclarativeEnvironment
         {
             if (!argument.TryGetIterator(_functionObject._realm, out var iterator))
             {
-                ExceptionHelper.ThrowTypeError(context.Engine.Realm, "object is not iterable");
+                Throw.TypeError(context.Engine.Realm, "object is not iterable");
             }
 
             array = _engine.Realm.Intrinsics.Array.ArrayCreate(0);
@@ -279,7 +267,7 @@ internal sealed class FunctionEnvironment : DeclarativeEnvironment
     private void HandleRestElementArray(
         EvaluationContext context,
         RestElement restElement,
-        JsValue[] arguments,
+        JsCallArguments arguments,
         int index,
         bool initiallyEmpty)
     {
@@ -305,7 +293,7 @@ internal sealed class FunctionEnvironment : DeclarativeEnvironment
         }
         else
         {
-            ExceptionHelper.ThrowSyntaxError(_functionObject._realm, "Rest parameters can only be identifiers or arrays");
+            Throw.SyntaxError(_functionObject._realm, "Rest parameters can only be identifiers or arrays");
         }
     }
 
@@ -321,7 +309,7 @@ internal sealed class FunctionEnvironment : DeclarativeEnvironment
             && right is Identifier idRight
             && string.Equals(idLeft.Name, idRight.Name, StringComparison.Ordinal))
         {
-            ExceptionHelper.ThrowReferenceNameError(_functionObject._realm, idRight.Name);
+            Throw.ReferenceNameError(_functionObject._realm, idRight.Name);
         }
 
         if (argument.IsUndefined())
@@ -329,18 +317,17 @@ internal sealed class FunctionEnvironment : DeclarativeEnvironment
             var expression = (Expression) right;
             var jintExpression = JintExpression.Build(expression);
 
-            var oldEnv = _engine.ExecutionContext.LexicalEnvironment;
-            var paramVarEnv = JintEnvironment.NewDeclarativeEnvironment(_engine, oldEnv);
-
-            _engine.EnterExecutionContext(new ExecutionContext(null, paramVarEnv, paramVarEnv, null, _engine.Realm, null));
-            try
-            {
-                argument = jintExpression.GetValue(context);
-            }
-            finally
-            {
-                _engine.LeaveExecutionContext();
-            }
+            // Evaluate the default expression in the current execution context.
+            // The VariableEnvironment has already been set up correctly for eval in FunctionDeclarationInstantiation.
+            // The LexicalEnvironment is the function environment (funcEnv) which contains parameter bindings.
+            // This allows EvalDeclarationInstantiation to detect conflicts between eval'd vars and parameters.
+            //
+            // Note: Closures created during parameter evaluation will capture the function environment,
+            // and eval'd vars go to varEnv. For closures in parameters to see eval'd vars, they need
+            // to look up through the environment chain: funcEnv -> varEnv -> outer.
+            // But since varEnv's outer is funcEnv, not the other way around, this doesn't work by default.
+            // The spec's handling of this is complex; we prioritize the SyntaxError detection.
+            argument = jintExpression.GetValue(context);
 
             if (idLeft != null && right.IsFunctionDefinition())
             {
@@ -348,10 +335,7 @@ internal sealed class FunctionEnvironment : DeclarativeEnvironment
             }
         }
 
-        SetFunctionParameter(context, left, new[]
-        {
-            argument
-        }, 0, initiallyEmpty);
+        SetFunctionParameter(context, left, [argument], 0, initiallyEmpty);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -383,7 +367,7 @@ internal sealed class FunctionEnvironment : DeclarativeEnvironment
             }
             else
             {
-                ExceptionHelper.ThrowTypeError(_functionObject._realm, "Can't update the value of an immutable binding.");
+                Throw.TypeError(_functionObject._realm, "Can't update the value of an immutable binding.");
             }
         }
     }

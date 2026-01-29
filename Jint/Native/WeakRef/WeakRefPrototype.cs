@@ -1,4 +1,3 @@
-using Jint.Collections;
 using Jint.Native.Object;
 using Jint.Native.Symbol;
 using Jint.Runtime;
@@ -41,14 +40,14 @@ internal sealed class WeakRefPrototype : Prototype
         SetSymbols(symbols);
     }
 
-    private JsValue Deref(JsValue thisObject, JsValue[] arguments)
+    private JsValue Deref(JsValue thisObject, JsCallArguments arguments)
     {
         if (thisObject is JsWeakRef weakRef)
         {
             return weakRef.WeakRefDeref();
         }
 
-        ExceptionHelper.ThrowTypeError(_realm, "object must be a WeakRef");
+        Throw.TypeError(_realm, "object must be a WeakRef");
         return default;
     }
 }

@@ -1,7 +1,6 @@
 ﻿#pragma warning disable CA1859 // Use concrete types when possible for improved performance -- most of prototype methods return JsValue
 
 using System.Text;
-using Jint.Collections;
 using Jint.Native.Array;
 using Jint.Native.Function;
 using Jint.Native.Object;
@@ -48,7 +47,7 @@ internal sealed class StringConstructor : Constructor
     /// <summary>
     /// https://tc39.es/ecma262/#sec-string.fromcharcode
     /// </summary>
-    private static JsValue FromCharCode(JsValue? thisObj, JsValue[] arguments)
+    private static JsValue FromCharCode(JsValue? thisObj, JsCallArguments arguments)
     {
         var length = arguments.Length;
 
@@ -63,11 +62,11 @@ internal sealed class StringConstructor : Constructor
         }
 
 #if SUPPORTS_SPAN_PARSE
-            var elements = length < 512 ? stackalloc char[length] : new char[length];
+        var elements = length < 512 ? stackalloc char[length] : new char[length];
 #else
         var elements = new char[length];
 #endif
-        for (var i = 0; i < elements.Length; i++ )
+        for (var i = 0; i < elements.Length; i++)
         {
             var nextCu = TypeConverter.ToUint16(arguments[i]);
             elements[i] = (char) nextCu;
@@ -79,7 +78,7 @@ internal sealed class StringConstructor : Constructor
     /// <summary>
     /// https://tc39.es/ecma262/#sec-string.fromcodepoint
     /// </summary>
-    private JsValue FromCodePoint(JsValue thisObject, JsValue[] arguments)
+    private JsValue FromCodePoint(JsValue thisObject, JsCallArguments arguments)
     {
         JsNumber codePoint;
         using var result = new ValueStringBuilder(stackalloc char[128]);
@@ -123,15 +122,15 @@ internal sealed class StringConstructor : Constructor
 
         return JsString.Create(result.ToString());
 
-        rangeError:
-        _engine.SignalError(ExceptionHelper.CreateRangeError(_realm, "Invalid code point " + codePoint));
+rangeError:
+        _engine.SignalError(Throw.CreateRangeError(_realm, "Invalid code point " + codePoint));
         return JsEmpty.Instance;
     }
 
     /// <summary>
     /// https://tc39.es/ecma262/#sec-string.raw
     /// </summary>
-    private JsValue Raw(JsValue thisObject, JsValue[] arguments)
+    private JsValue Raw(JsValue thisObject, JsCallArguments arguments)
     {
         var cooked = TypeConverter.ToObject(_realm, arguments.At(0));
         var raw = cooked.Get(JintTaggedTemplateExpression.PropertyRaw);
@@ -160,7 +159,7 @@ internal sealed class StringConstructor : Constructor
         return result.ToString();
     }
 
-    protected internal override JsValue Call(JsValue thisObject, JsValue[] arguments)
+    protected internal override JsValue Call(JsValue thisObject, JsCallArguments arguments)
     {
         if (arguments.Length == 0)
         {
@@ -178,7 +177,7 @@ internal sealed class StringConstructor : Constructor
     /// <summary>
     /// https://tc39.es/ecma262/#sec-string-constructor-string-value
     /// </summary>
-    public override ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
+    public override ObjectInstance Construct(JsCallArguments arguments, JsValue newTarget)
     {
         JsString s;
         if (arguments.Length == 0)

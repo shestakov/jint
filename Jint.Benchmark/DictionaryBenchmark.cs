@@ -7,7 +7,7 @@ namespace Jint.Benchmark;
 public class DictionaryBenchmark
 {
     private static readonly string[] _keys =
-    {
+    [
         "some",
         "key and",
         "another",
@@ -20,7 +20,7 @@ public class DictionaryBenchmark
         "asdadsasa",
         "23323232323",
         "asdadsada sa213"
-    };
+    ];
 
     [Params(0, 2, 3, 5, 8, 9, 10)]
     public int N { get; set; }
@@ -31,7 +31,7 @@ public class DictionaryBenchmark
         var hybridDictionary = new HybridDictionary<object>();
         for (var i = 0; i < N; i++)
         {
-            hybridDictionary.Add(_keys[i], _keys);
+            hybridDictionary[_keys[i]] = _keys;
         }
 
         foreach (var key in _keys)

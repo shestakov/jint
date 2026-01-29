@@ -1,4 +1,3 @@
-using Jint.Collections;
 using Jint.Native.Object;
 using Jint.Native.Symbol;
 using Jint.Runtime;
@@ -44,12 +43,12 @@ internal sealed class SharedArrayBufferPrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-get-sharedarraybuffer.prototype.bytelength
     /// </summary>
-    private JsNumber ByteLength(JsValue thisObj, JsValue[] arguments)
+    private JsNumber ByteLength(JsValue thisObj, JsCallArguments arguments)
     {
         var o = thisObj as JsSharedArrayBuffer;
         if (o is null || !o.IsSharedArrayBuffer)
         {
-            ExceptionHelper.ThrowTypeError(_realm, "Method prototype.byteLength called on incompatible receiver " + thisObj);
+            Throw.TypeError(_realm, "Method prototype.byteLength called on incompatible receiver " + thisObj);
         }
 
         return JsNumber.Create(o.ArrayBufferByteLength);
@@ -58,12 +57,12 @@ internal sealed class SharedArrayBufferPrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-sharedarraybuffer.prototype.slice
     /// </summary>
-    private JsSharedArrayBuffer Slice(JsValue thisObj, JsValue[] arguments)
+    private JsSharedArrayBuffer Slice(JsValue thisObj, JsCallArguments arguments)
     {
         var o = thisObj as JsSharedArrayBuffer;
         if (o is null || !o.IsSharedArrayBuffer)
         {
-            ExceptionHelper.ThrowTypeError(_realm, "Method prototype.slice called on incompatible receiver " + thisObj);
+            Throw.TypeError(_realm, "Method prototype.slice called on incompatible receiver " + thisObj);
         }
 
         o.AssertNotDetached();
@@ -99,38 +98,38 @@ internal sealed class SharedArrayBufferPrototype : Prototype
 
         var newLen = System.Math.Max(final - first, 0);
         var ctor = SpeciesConstructor(o, _realm.Intrinsics.SharedArrayBuffer);
-        var bufferInstance = Construct(ctor, new JsValue[] { JsNumber.Create(newLen) }) as JsSharedArrayBuffer;
+        var bufferInstance = Construct(ctor, [JsNumber.Create(newLen)]) as JsSharedArrayBuffer;
 
         if (bufferInstance is null)
         {
-            ExceptionHelper.ThrowTypeError(_realm);
+            Throw.TypeError(_realm);
         }
 
         if (!bufferInstance.IsSharedArrayBuffer)
         {
-            ExceptionHelper.ThrowTypeError(_realm);
+            Throw.TypeError(_realm);
         }
 
         if (bufferInstance.IsDetachedBuffer)
         {
-            ExceptionHelper.ThrowTypeError(_realm);
+            Throw.TypeError(_realm);
         }
 
         if (ReferenceEquals(bufferInstance, o))
         {
-            ExceptionHelper.ThrowTypeError(_realm);
+            Throw.TypeError(_realm);
         }
 
         if (bufferInstance.ArrayBufferByteLength < newLen)
         {
-            ExceptionHelper.ThrowTypeError(_realm);
+            Throw.TypeError(_realm);
         }
 
         // NOTE: Side-effects of the above steps may have detached O.
 
         if (bufferInstance.IsDetachedBuffer)
         {
-            ExceptionHelper.ThrowTypeError(_realm);
+            Throw.TypeError(_realm);
         }
 
         var fromBuf = o.ArrayBufferData!;
@@ -142,12 +141,12 @@ internal sealed class SharedArrayBufferPrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-get-sharedarraybuffer.prototype.growable
     /// </summary>
-    private JsValue Growable(JsValue thisObject, JsValue[] arguments)
+    private JsValue Growable(JsValue thisObject, JsCallArguments arguments)
     {
         var o = thisObject as JsSharedArrayBuffer;
         if (o is null || !o.IsSharedArrayBuffer)
         {
-            ExceptionHelper.ThrowTypeError(_realm, "Method SharedArrayBuffer.prototype.growable called on incompatible receiver " + thisObject);
+            Throw.TypeError(_realm, "Method SharedArrayBuffer.prototype.growable called on incompatible receiver " + thisObject);
         }
 
         return !o.IsFixedLengthArrayBuffer;
@@ -156,12 +155,12 @@ internal sealed class SharedArrayBufferPrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-sharedarraybuffer.prototype.grow
     /// </summary>
-    private JsValue Grow(JsValue thisObject, JsValue[] arguments)
+    private JsValue Grow(JsValue thisObject, JsCallArguments arguments)
     {
         var o = thisObject as JsSharedArrayBuffer;
         if (o is null || !o.IsSharedArrayBuffer)
         {
-            ExceptionHelper.ThrowTypeError(_realm, "Method SharedArrayBuffer.prototype.grow called on incompatible receiver " + thisObject);
+            Throw.TypeError(_realm, "Method SharedArrayBuffer.prototype.grow called on incompatible receiver " + thisObject);
         }
 
         var newLength = arguments.At(0);
@@ -177,12 +176,12 @@ internal sealed class SharedArrayBufferPrototype : Prototype
     /// <summary>
     /// https://tc39.es/ecma262/#sec-get-sharedarraybuffer.prototype.maxbytelength
     /// </summary>
-    private JsValue MaxByteLength(JsValue thisObject, JsValue[] arguments)
+    private JsValue MaxByteLength(JsValue thisObject, JsCallArguments arguments)
     {
         var o = thisObject as JsSharedArrayBuffer;
         if (o is null || !o.IsSharedArrayBuffer)
         {
-            ExceptionHelper.ThrowTypeError(_realm, "Method SharedArrayBuffer.prototype.maxByteLength called on incompatible receiver " + thisObject);
+            Throw.TypeError(_realm, "Method SharedArrayBuffer.prototype.maxByteLength called on incompatible receiver " + thisObject);
         }
 
         if (o.IsDetachedBuffer)

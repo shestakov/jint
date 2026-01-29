@@ -25,16 +25,16 @@ internal sealed class WeakMapConstructor : Constructor
 
     public WeakMapPrototype PrototypeObject { get; }
 
-    public override ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
+    public override ObjectInstance Construct(JsCallArguments arguments, JsValue newTarget)
     {
         if (newTarget.IsUndefined())
         {
-            ExceptionHelper.ThrowTypeError(_realm);
+            Throw.TypeError(_realm);
         }
 
         var map = OrdinaryCreateFromConstructor(
             newTarget,
-            static intrinsics =>  intrinsics.WeakMap.PrototypeObject,
+            static intrinsics => intrinsics.WeakMap.PrototypeObject,
             static (Engine engine, Realm _, object? _) => new JsWeakMap(engine));
         if (arguments.Length > 0 && !arguments[0].IsNullOrUndefined())
         {

@@ -1,6 +1,5 @@
 #pragma warning disable CA1859 // Use concrete types when possible for improved performance -- most of prototype methods return JsValue
 
-using Jint.Collections;
 using Jint.Native.Object;
 using Jint.Native.Symbol;
 using Jint.Runtime;
@@ -49,20 +48,20 @@ internal sealed class WeakSetPrototype : Prototype
         SetSymbols(symbols);
     }
 
-    private JsValue Add(JsValue thisObject, JsValue[] arguments)
+    private JsValue Add(JsValue thisObject, JsCallArguments arguments)
     {
         var set = AssertWeakSetInstance(thisObject);
         set.WeakSetAdd(arguments.At(0));
         return thisObject;
     }
 
-    private JsValue Delete(JsValue thisObject, JsValue[] arguments)
+    private JsValue Delete(JsValue thisObject, JsCallArguments arguments)
     {
         var set = AssertWeakSetInstance(thisObject);
         return set.WeakSetDelete(arguments.At(0)) ? JsBoolean.True : JsBoolean.False;
     }
 
-    private JsValue Has(JsValue thisObject, JsValue[] arguments)
+    private JsValue Has(JsValue thisObject, JsCallArguments arguments)
     {
         var set = AssertWeakSetInstance(thisObject);
         return set.WeakSetHas(arguments.At(0)) ? JsBoolean.True : JsBoolean.False;
@@ -75,7 +74,7 @@ internal sealed class WeakSetPrototype : Prototype
             return set;
         }
 
-        ExceptionHelper.ThrowTypeError(_realm, "object must be a WeakSet");
+        Throw.TypeError(_realm, "object must be a WeakSet");
         return default;
     }
 }

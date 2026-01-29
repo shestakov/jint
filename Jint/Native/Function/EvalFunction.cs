@@ -25,7 +25,7 @@ public sealed class EvalFunction : Function
         _length = new PropertyDescriptor(JsNumber.PositiveOne, PropertyFlag.Configurable);
     }
 
-    protected internal override JsValue Call(JsValue thisObject, JsValue[] arguments)
+    protected internal override JsValue Call(JsValue thisObject, JsCallArguments arguments)
     {
         var callerRealm = _engine.ExecutionContext.Realm;
         var x = arguments.At(0);
@@ -84,7 +84,9 @@ public sealed class EvalFunction : Function
             CheckPrivateFields = false
         };
         var parser = _engine.GetParserFor(adjustedParserOptions);
-        script = parser.ParseScriptGuarded(_engine.Realm, x.ToString(), strict: strictCaller);
+        // For indirect eval, parse in non-strict mode (strictness only from "use strict" in code)
+        // For direct eval, inherit caller's strictness
+        script = parser.ParseScriptGuarded(_engine.Realm, x.ToString(), strict: direct && strictCaller);
 
         var body = script.Body;
         if (body.Count == 0)
@@ -99,7 +101,7 @@ public sealed class EvalFunction : Function
             // if body Contains NewTarget, throw a SyntaxError exception.
             if (analyzer._containsNewTarget)
             {
-                ExceptionHelper.ThrowSyntaxError(evalRealm, "new.target expression is not allowed here");
+                Throw.SyntaxError(evalRealm, "new.target expression is not allowed here");
             }
         }
 
@@ -108,7 +110,7 @@ public sealed class EvalFunction : Function
             // if body Contains SuperProperty, throw a SyntaxError exception.
             if (analyzer._containsSuperProperty)
             {
-                ExceptionHelper.ThrowSyntaxError(evalRealm, "'super' keyword unexpected here");
+                Throw.SyntaxError(evalRealm, "'super' keyword unexpected here");
             }
         }
 
@@ -117,7 +119,7 @@ public sealed class EvalFunction : Function
             // if body Contains SuperCall, throw a SyntaxError exception.
             if (analyzer._containsSuperCall)
             {
-                ExceptionHelper.ThrowSyntaxError(evalRealm, "'super' keyword unexpected here");
+                Throw.SyntaxError(evalRealm, "'super' keyword unexpected here");
             }
         }
 
@@ -126,14 +128,20 @@ public sealed class EvalFunction : Function
             // if ContainsArguments of body is true, throw a SyntaxError exception.
             if (analyzer._containsArguments)
             {
-                ExceptionHelper.ThrowSyntaxError(evalRealm, "'arguments' is not allowed in class field initializer or static initialization block");
+                Throw.SyntaxError(evalRealm, "'arguments' is not allowed in class field initializer or static initialization block");
             }
         }
 
-        var strictEval = script.Strict || _engine._isStrict;
+        // Per ECMAScript 19.2.1.1 step 6-7:
+        // strictEval is true if:
+        // - The eval code has a "use strict" directive, OR
+        // - It's a DIRECT eval and the caller is in strict mode
+        var strictEval = script.Strict || (direct && _engine._isStrict);
         var ctx = _engine.ExecutionContext;
 
-        using (new StrictModeScope(strictEval))
+        // For indirect eval, we need to force reset the strict mode scope
+        // because the caller's strict mode should not apply
+        using (new StrictModeScope(strictEval, force: !direct))
         {
             Environment lexEnv;
             Environment varEnv;
@@ -172,7 +180,7 @@ public sealed class EvalFunction : Function
 
                 if (result.Type == CompletionType.Throw)
                 {
-                    ExceptionHelper.ThrowJavaScriptException(_engine, value, result);
+                    Throw.JavaScriptException(_engine, value, result);
                     return null!;
                 }
                 else
@@ -216,6 +224,16 @@ public sealed class EvalFunction : Function
         {
             _containsSuperCall |= callExpression.Callee.Type == NodeType.Super;
             return base.VisitCallExpression(callExpression);
+        }
+
+        protected override object? VisitFunctionDeclaration(FunctionDeclaration node)
+        {
+            return node;
+        }
+
+        protected override object? VisitFunctionExpression(FunctionExpression node)
+        {
+            return node;
         }
     }
 }

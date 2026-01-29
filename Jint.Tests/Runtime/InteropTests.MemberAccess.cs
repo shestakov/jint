@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Diagnostics.CodeAnalysis;
 using Jint.Native;
+using Jint.Native.Object;
 using Jint.Runtime;
 using Jint.Runtime.Interop;
 using Jint.Tests.Runtime.Domain;
@@ -74,6 +75,23 @@ public partial class InteropTests
 
         // we forbid GetType by default
         Assert.True(engine.Evaluate("m.GetType").IsUndefined());
+    }
+
+    [Fact]
+    public void ShouldBeAbleToFilterConstructors()
+    {
+        var engine = new Engine(options => options
+            .SetTypeResolver(new TypeResolver
+            {
+                MemberFilter = member => member is System.Reflection.ConstructorInfo ci && ci.GetParameters().Length == 0
+            })
+        );
+
+        engine.SetValue("HiddenMembers", TypeReference.CreateTypeReference<HiddenMembers>(engine));
+        engine.Evaluate("new HiddenMembers()").Should().BeAssignableTo<ObjectInstance>();
+
+        var act = () => engine.Evaluate("new HiddenMembers('/etc/passwd')");
+        act.Should().Throw<JavaScriptException>().WithMessage("Could not resolve a constructor*");
     }
 
     [Fact]
@@ -279,5 +297,45 @@ public partial class InteropTests
         engine.Evaluate("obj.Age").AsNumber().Should().Be(42);
 
         engine.Invoking(e => e.Evaluate("obj.AgeMissing")).Should().Throw<MissingMemberException>();
+    }
+
+    public class ClassWithPropertyToHide
+    {
+        public int x { get; set; } = 2;
+        public int y { get; set; } = 3;
+    }
+
+    public class ClassThatHidesProperty : ClassWithPropertyToHide
+    {
+        public new bool x { get; set; } = true;
+    }
+
+    [Fact]
+    public void ShouldRespectExplicitHiding()
+    {
+        var engine = new Engine();
+
+        engine.SetValue("obj", new ClassThatHidesProperty());
+        engine.Evaluate("obj.x").AsBoolean().Should().BeTrue();
+        engine.Evaluate("obj.y").AsNumber().Should().Be(3);
+    }
+
+    [Fact]
+    public void ShouldSkipEnumIndexerWhenNoMatch()
+    {
+        var engine = new Engine();
+        engine.SetValue("obj", new ObjectWithEnumIndexer());
+        engine.Evaluate("obj.Foo()").AsString().Should().Be("Foo called");
+    }
+
+    private class ObjectWithEnumIndexer
+    {
+        public string this[TestEnumInt32 key]
+        {
+            get => "";
+            set { }
+        }
+
+        public string Foo() => "Foo called";
     }
 }

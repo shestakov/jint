@@ -1,5 +1,4 @@
 using System.Diagnostics.CodeAnalysis;
-using System.Globalization;
 using System.Linq;
 using System.Text;
 using Jint.Collections;
@@ -81,7 +80,7 @@ internal sealed class JintCallStack
 
     public CallStackElement Pop()
     {
-        ref readonly var item = ref _stack.Pop();
+        var item = _stack.Pop();
         if (_statistics is not null)
         {
             if (_statistics[item] == 0)
@@ -115,48 +114,45 @@ internal sealed class JintCallStack
         return string.Join("->", _stack.Select(static cse => cse.ToString()).Reverse());
     }
 
-    internal string BuildCallStackString(SourceLocation location, int excludeTop = 0)
+    internal string BuildCallStackString(Engine engine, SourceLocation location, int excludeTop = 0)
     {
         static void AppendLocation(
             ref ValueStringBuilder sb,
             string shortDescription,
             in SourceLocation loc,
-            in CallStackElement? element)
+            in CallStackElement? element,
+            Options.BuildCallStackDelegate? callStackBuilder)
         {
-            sb.Append("   at");
-
-            if (!string.IsNullOrWhiteSpace(shortDescription))
+            if (callStackBuilder != null && TryInvokeCustomCallStackHandler(callStackBuilder, element, shortDescription, loc, ref sb))
             {
-                sb.Append(' ');
-                sb.Append(shortDescription);
+                return;
             }
 
-            if (element?.Arguments is not null)
-            {
-                // it's a function
-                sb.Append(" (");
-                for (var index = 0; index < element.Value.Arguments.Value.Count; index++)
-                {
-                    if (index != 0)
-                    {
-                        sb.Append(", ");
-                    }
+            var hasShortDescription = !string.IsNullOrWhiteSpace(shortDescription);
 
-                    var arg = element.Value.Arguments.Value[index];
-                    sb.Append(GetPropertyKey(arg));
-                }
+            sb.Append("    at ");
+
+            if (hasShortDescription)
+            {
+                sb.Append(shortDescription);
+                sb.Append(" (");
+            }
+
+            sb.Append(loc.SourceFile);
+            sb.Append(':');
+            sb.Append(loc.End.Line);
+            sb.Append(':');
+            sb.Append(loc.Start.Column + 1); // report column number instead of index
+
+            if (hasShortDescription)
+            {
                 sb.Append(')');
             }
 
-            sb.Append(' ');
-            sb.Append(loc.SourceFile);
-            sb.Append(':');
-            sb.Append(loc.End.Line.ToString(CultureInfo.InvariantCulture));
-            sb.Append(':');
-            sb.Append((loc.Start.Column + 1).ToString(CultureInfo.InvariantCulture)); // report column number instead of index
             sb.Append(System.Environment.NewLine);
         }
 
+        var customCallStackBuilder = engine.Options.Interop.BuildCallStackHandler;
         var builder = new ValueStringBuilder();
 
         // stack is one frame behind function-wise when we start to process it from expression level
@@ -164,7 +160,7 @@ internal sealed class JintCallStack
         var element = index >= 0 ? _stack[index] : (CallStackElement?) null;
         var shortDescription = element?.ToString() ?? "";
 
-        AppendLocation(ref builder, shortDescription, location, element);
+        AppendLocation(ref builder, shortDescription, location, element, customCallStackBuilder);
 
         location = element?.Location ?? default;
         index--;
@@ -174,7 +170,7 @@ internal sealed class JintCallStack
             element = index >= 0 ? _stack[index] : null;
             shortDescription = element?.ToString() ?? "";
 
-            AppendLocation(ref builder, shortDescription, location, element);
+            AppendLocation(ref builder, shortDescription, location, element, customCallStackBuilder);
 
             location = element?.Location ?? default;
             index--;
@@ -185,6 +181,34 @@ internal sealed class JintCallStack
         builder.Dispose();
 
         return result;
+    }
+
+    private static bool TryInvokeCustomCallStackHandler(
+        Options.BuildCallStackDelegate handler,
+        CallStackElement? element,
+        string shortDescription,
+        SourceLocation loc,
+        ref ValueStringBuilder sb)
+    {
+        string[]? arguments = null;
+        if (element?.Arguments is not null)
+        {
+            var args = element.Value.Arguments.Value;
+            arguments = args.Count > 0 ? new string[args.Count] : [];
+            for (var i = 0; i < arguments.Length; i++)
+            {
+                arguments[i] = GetPropertyKey(args[i]);
+            }
+        }
+
+        var str = handler(shortDescription, loc, arguments);
+        if (!string.IsNullOrEmpty(str))
+        {
+            sb.Append(str);
+            return true;
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -204,8 +228,7 @@ internal sealed class JintCallStack
 
         if (expression is MemberExpression { Computed: false } staticMemberExpression)
         {
-            return GetPropertyKey(staticMemberExpression.Object) + "." +
-                   GetPropertyKey(staticMemberExpression.Property);
+            return $"{GetPropertyKey(staticMemberExpression.Object)}.{GetPropertyKey(staticMemberExpression.Property)}";
         }
 
         return "?";

@@ -58,6 +58,38 @@ public sealed class JsTypedArray : ObjectInstance
         return record.IsTypedArrayOutOfBounds ? 0 : record.TypedArrayLength;
     }
 
+    public override bool PreventExtensions()
+    {
+        if (!IsTypedArrayFixedLength)
+        {
+            return false;
+        }
+
+        return base.PreventExtensions();
+    }
+
+    /// <summary>
+    /// https://tc39.es/ecma262/#sec-istypedarrayfixedlength
+    /// </summary>
+    private bool IsTypedArrayFixedLength
+    {
+        get
+        {
+            if (_arrayLength == LengthAuto)
+            {
+                return false;
+            }
+
+            var buffer = _viewedArrayBuffer;
+            if (!buffer.IsFixedLengthArrayBuffer && !buffer.IsSharedArrayBuffer)
+            {
+                return false;
+            }
+
+            return true;
+        }
+    }
+
     internal override bool IsArrayLike => true;
 
     internal override bool IsIntegerIndexedArray => true;
@@ -88,13 +120,10 @@ public sealed class JsTypedArray : ObjectInstance
     /// </summary>
     public override bool HasProperty(JsValue property)
     {
-        if (property.IsString())
+        var numericIndex = TypeConverter.CanonicalNumericIndexString(property);
+        if (numericIndex is not null)
         {
-            var numericIndex = TypeConverter.CanonicalNumericIndexString(property);
-            if (numericIndex is not null)
-            {
-                return IsValidIntegerIndex(numericIndex.Value);
-            }
+            return IsValidIntegerIndex(numericIndex.Value);
         }
 
         return base.HasProperty(property);
@@ -162,39 +191,36 @@ public sealed class JsTypedArray : ObjectInstance
     /// </summary>
     public override bool DefineOwnProperty(JsValue property, PropertyDescriptor desc)
     {
-        if (property.IsString())
+        var numericIndex = TypeConverter.CanonicalNumericIndexString(property);
+        if (numericIndex is not null)
         {
-            var numericIndex = TypeConverter.CanonicalNumericIndexString(property);
-            if (numericIndex is not null)
+            if (!IsValidIntegerIndex(numericIndex.Value))
             {
-                if (!IsValidIntegerIndex(numericIndex.Value))
-                {
-                    return false;
-                }
-
-                if (desc.ConfigurableSet && !desc.Configurable)
-                {
-                    return false;
-                }
-
-                if (desc.EnumerableSet && !desc.Enumerable)
-                {
-                    return false;
-                }
-
-                if (desc.IsAccessorDescriptor())
-                {
-                    return false;
-                }
-
-                if (desc.WritableSet && !desc.Writable)
-                {
-                    return false;
-                }
-
-                IntegerIndexedElementSet(numericIndex.Value, desc.Value);
-                return true;
+                return false;
             }
+
+            if (desc is { ConfigurableSet: true, Configurable: false })
+            {
+                return false;
+            }
+
+            if (desc is { EnumerableSet: true, Enumerable: false })
+            {
+                return false;
+            }
+
+            if (desc.IsAccessorDescriptor())
+            {
+                return false;
+            }
+
+            if (desc is { WritableSet: true, Writable: false })
+            {
+                return false;
+            }
+
+            IntegerIndexedElementSet(numericIndex.Value, desc.Value);
+            return true;
         }
 
         return base.DefineOwnProperty(property, desc);
@@ -332,7 +358,7 @@ public sealed class JsTypedArray : ObjectInstance
             }
             catch (ParseErrorException ex)
             {
-                ExceptionHelper.ThrowSyntaxError(_engine.Realm, ex.Message);
+                Throw.SyntaxError(_engine.Realm, ex.Message);
             }
         }
     }
@@ -343,6 +369,10 @@ public sealed class JsTypedArray : ObjectInstance
         var elementType = _arrayElementType;
         var elementSize = elementType.GetElementSize();
         var indexedPosition = index * elementSize + offset;
+
+        // https://tc39.es/proposal-immutable-arraybuffer/#sec-integerindexedelementset
+        _viewedArrayBuffer.AssertNotImmutable();
+
         _viewedArrayBuffer.SetValueInBuffer(indexedPosition, elementType, numValue, true, ArrayBufferOrder.Unordered);
     }
 

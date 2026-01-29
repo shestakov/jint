@@ -1,6 +1,5 @@
 #pragma warning disable CA1859 // Use concrete types when possible for improved performance -- most of prototype methods return JsValue
 
-using Jint.Collections;
 using Jint.Native.Array;
 using Jint.Native.Object;
 using Jint.Native.Symbol;
@@ -52,7 +51,7 @@ internal sealed class FunctionPrototype : Function
     /// <summary>
     /// https://tc39.es/ecma262/#sec-function.prototype-@@hasinstance
     /// </summary>
-    private static JsValue HasInstance(JsValue thisObject, JsValue[] arguments)
+    private static JsValue HasInstance(JsValue thisObject, JsCallArguments arguments)
     {
         return thisObject.OrdinaryHasInstance(arguments.At(0));
     }
@@ -60,11 +59,11 @@ internal sealed class FunctionPrototype : Function
     /// <summary>
     /// https://tc39.es/ecma262/#sec-function.prototype.bind
     /// </summary>
-    private JsValue Bind(JsValue thisObject, JsValue[] arguments)
+    private JsValue Bind(JsValue thisObject, JsCallArguments arguments)
     {
         if (thisObject is not (ICallable and ObjectInstance oi))
         {
-            ExceptionHelper.ThrowTypeError(_realm, "Bind must be called on a function");
+            Throw.TypeError(_realm, "Bind must be called on a function");
             return default;
         }
 
@@ -72,7 +71,7 @@ internal sealed class FunctionPrototype : Function
         var f = BoundFunctionCreate(oi, thisArg, arguments.Skip(1));
 
         JsNumber l;
-        var targetHasLength = oi.HasOwnProperty(CommonProperties.Length) == true;
+        var targetHasLength = oi.HasOwnProperty(CommonProperties.Length);
         if (targetHasLength)
         {
             var targetLen = oi.Get(CommonProperties.Length);
@@ -130,26 +129,26 @@ internal sealed class FunctionPrototype : Function
     /// <summary>
     /// https://tc39.es/ecma262/#sec-function.prototype.tostring
     /// </summary>
-    private JsValue ToString(JsValue thisObject, JsValue[] arguments)
+    private JsValue ToString(JsValue thisObject, JsCallArguments arguments)
     {
         if (thisObject.IsObject() && thisObject.IsCallable)
         {
             return thisObject.ToString();
         }
 
-        ExceptionHelper.ThrowTypeError(_realm, "Function.prototype.toString requires that 'this' be a Function");
+        Throw.TypeError(_realm, "Function.prototype.toString requires that 'this' be a Function");
         return null;
     }
 
     /// <summary>
     /// https://tc39.es/ecma262/#sec-function.prototype.apply
     /// </summary>
-    private JsValue Apply(JsValue thisObject, JsValue[] arguments)
+    private JsValue Apply(JsValue thisObject, JsCallArguments arguments)
     {
         var func = thisObject as ICallable;
         if (func is null)
         {
-            ExceptionHelper.ThrowTypeError(_realm);
+            Throw.TypeError(_realm);
         }
         var thisArg = arguments.At(0);
         var argArray = arguments.At(1);
@@ -174,7 +173,7 @@ internal sealed class FunctionPrototype : Function
         var argArrayObj = argArray as ObjectInstance;
         if (argArrayObj is null)
         {
-            ExceptionHelper.ThrowTypeError(realm);
+            Throw.TypeError(realm);
         }
         var operations = ArrayOperations.For(argArrayObj, forWrite: false);
         var argList = elementTypes is null ? operations.GetAll() : operations.GetAll(elementTypes.Value);
@@ -184,14 +183,14 @@ internal sealed class FunctionPrototype : Function
     /// <summary>
     /// https://tc39.es/ecma262/#sec-function.prototype.call
     /// </summary>
-    private JsValue CallImpl(JsValue thisObject, JsValue[] arguments)
+    private JsValue CallImpl(JsValue thisObject, JsCallArguments arguments)
     {
         var func = thisObject as ICallable;
         if (func is null)
         {
-            ExceptionHelper.ThrowTypeError(_realm);
+            Throw.TypeError(_realm);
         }
-        JsValue[] values = System.Array.Empty<JsValue>();
+        JsValue[] values = [];
         if (arguments.Length > 1)
         {
             values = new JsValue[arguments.Length - 1];
@@ -203,7 +202,7 @@ internal sealed class FunctionPrototype : Function
         return result;
     }
 
-    protected internal override JsValue Call(JsValue thisObject, JsValue[] arguments)
+    protected internal override JsValue Call(JsValue thisObject, JsCallArguments arguments)
     {
         return Undefined;
     }

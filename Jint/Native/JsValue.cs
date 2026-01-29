@@ -40,6 +40,31 @@ public abstract partial class JsValue : IEquatable<JsValue>
     [DebuggerBrowsable(DebuggerBrowsableState.Never)]
     internal virtual bool IsConstructor => false;
 
+    // Temporal type checks
+    [DebuggerBrowsable(DebuggerBrowsableState.Never)]
+    internal virtual bool IsTemporalDuration => false;
+
+    [DebuggerBrowsable(DebuggerBrowsableState.Never)]
+    internal virtual bool IsTemporalInstant => false;
+
+    [DebuggerBrowsable(DebuggerBrowsableState.Never)]
+    internal virtual bool IsTemporalPlainDate => false;
+
+    [DebuggerBrowsable(DebuggerBrowsableState.Never)]
+    internal virtual bool IsTemporalPlainDateTime => false;
+
+    [DebuggerBrowsable(DebuggerBrowsableState.Never)]
+    internal virtual bool IsTemporalPlainMonthDay => false;
+
+    [DebuggerBrowsable(DebuggerBrowsableState.Never)]
+    internal virtual bool IsTemporalPlainTime => false;
+
+    [DebuggerBrowsable(DebuggerBrowsableState.Never)]
+    internal virtual bool IsTemporalPlainYearMonth => false;
+
+    [DebuggerBrowsable(DebuggerBrowsableState.Never)]
+    internal virtual bool IsTemporalZonedDateTime => false;
+
     internal bool IsEmpty => ReferenceEquals(this, JsEmpty.Instance);
 
     [Pure]
@@ -48,7 +73,7 @@ public abstract partial class JsValue : IEquatable<JsValue>
     {
         if (!TryGetIterator(realm, out var iterator, hint, method))
         {
-            ExceptionHelper.ThrowTypeError(realm, "The value is not iterable");
+            Throw.TypeError(realm, "The value is not iterable");
             return null!;
         }
 
@@ -61,7 +86,7 @@ public abstract partial class JsValue : IEquatable<JsValue>
         var iterator = method.Call(this);
         if (iterator is not ObjectInstance objectInstance)
         {
-            ExceptionHelper.ThrowTypeError(realm);
+            Throw.TypeError(realm);
             return null!;
         }
         return new IteratorInstance.ObjectIterator(objectInstance);
@@ -84,9 +109,16 @@ public abstract partial class JsValue : IEquatable<JsValue>
                 if (method is null)
                 {
                     var syncMethod = obj.GetMethod(GlobalSymbolRegistry.Iterator);
+                    if (syncMethod is null)
+                    {
+                        iterator = null;
+                        return false;
+                    }
                     var syncIteratorRecord = obj.GetIterator(realm, GeneratorKind.Sync, syncMethod);
-                    // TODO async CreateAsyncFromSyncIterator(syncIteratorRecord);
-                    ExceptionHelper.ThrowNotImplementedException("async");
+                    // CreateAsyncFromSyncIterator - wrap the sync iterator in an async adapter
+                    var asyncFromSync = new AsyncFromSyncIterator(obj.Engine, syncIteratorRecord);
+                    iterator = new IteratorInstance.ObjectIterator(asyncFromSync);
+                    return true;
                 }
             }
             else
@@ -104,7 +136,7 @@ public abstract partial class JsValue : IEquatable<JsValue>
         var iteratorResult = method.Call(obj, Arguments.Empty) as ObjectInstance;
         if (iteratorResult is null)
         {
-            ExceptionHelper.ThrowTypeError(realm, "Result of the Symbol.iterator method is not an object");
+            Throw.TypeError(realm, "Result of the Symbol.iterator method is not an object");
         }
 
         if (iteratorResult is IteratorInstance i)
@@ -127,17 +159,17 @@ public abstract partial class JsValue : IEquatable<JsValue>
         }
 
 #if NETSTANDARD2_1_OR_GREATER || NETCOREAPP
-            if (obj is ValueTask valueTask)
-            {
-                return ConvertTaskToPromise(engine, valueTask.AsTask());
-            }
+        if (obj is ValueTask valueTask)
+        {
+            return ConvertTaskToPromise(engine, valueTask.AsTask());
+        }
 
-            // ValueTask<T>
-            var asTask = obj.GetType().GetMethod(nameof(ValueTask<object>.AsTask));
-            if (asTask is not null)
-            {
-                return ConvertTaskToPromise(engine, (Task) asTask.Invoke(obj, parameters: null)!);
-            }
+        // ValueTask<T>
+        var asTask = obj.GetType().GetMethod(nameof(ValueTask<object>.AsTask));
+        if (asTask is not null)
+        {
+            return ConvertTaskToPromise(engine, (Task) asTask.Invoke(obj, parameters: null)!);
+        }
 #endif
 
         return FromObject(engine, JsValue.Undefined);
@@ -145,16 +177,18 @@ public abstract partial class JsValue : IEquatable<JsValue>
 
     internal static JsValue ConvertTaskToPromise(Engine engine, Task task)
     {
-        var (promise, resolve, reject) = engine.RegisterPromise();
+        // Use RegisterPromiseWithClrValue to ensure FromObject is called on the main thread,
+        // not on the background thread that completes the Task.
+        var (promise, resolveClr, rejectClr) = engine.RegisterPromiseWithClrValue();
         task = task.ContinueWith(continuationAction =>
             {
                 if (continuationAction.IsFaulted)
                 {
-                    reject(FromObject(engine, continuationAction.Exception));
+                    rejectClr(continuationAction.Exception);
                 }
                 else if (continuationAction.IsCanceled)
                 {
-                    reject(FromObject(engine, new ExecutionCanceledException()));
+                    rejectClr(new ExecutionCanceledException());
                 }
                 else
                 {
@@ -162,18 +196,18 @@ public abstract partial class JsValue : IEquatable<JsValue>
                     // See https://github.com/sebastienros/jint/pull/1567#issuecomment-1681987702
                     if (Task.CompletedTask.Equals(continuationAction))
                     {
-                        resolve(FromObject(engine, JsValue.Undefined));
+                        resolveClr(Undefined);
                         return;
                     }
 
-                    var result = continuationAction.GetType().GetProperty(nameof(Task<object>.Result));
+                    var result = continuationAction.GetType().GetProperty(nameof(Task<>.Result));
                     if (result is not null)
                     {
-                        resolve(FromObject(engine, result.GetValue(continuationAction)));
+                        resolveClr(result.GetValue(continuationAction));
                     }
                     else
                     {
-                        resolve(FromObject(engine, JsValue.Undefined));
+                        resolveClr(Undefined);
                     }
                 }
             },
@@ -273,7 +307,7 @@ public abstract partial class JsValue : IEquatable<JsValue>
     /// </summary>
     public virtual bool Set(JsValue property, JsValue value, JsValue receiver)
     {
-        ExceptionHelper.ThrowNotSupportedException();
+        Throw.NotSupportedException();
         return false;
     }
 
@@ -284,22 +318,44 @@ public abstract partial class JsValue : IEquatable<JsValue>
     {
         if (target is not ObjectInstance oi)
         {
-            ExceptionHelper.ThrowTypeErrorNoEngine("Right-hand side of 'instanceof' is not an object");
+            Throw.TypeErrorNoEngine("Right-hand side of 'instanceof' is not an object");
             return false;
         }
 
         var instOfHandler = oi.GetMethod(GlobalSymbolRegistry.HasInstance);
         if (instOfHandler is not null)
         {
-            return TypeConverter.ToBoolean(instOfHandler.Call(target, new[] { this }));
+            return TypeConverter.ToBoolean(instOfHandler.Call(target, this));
         }
 
         if (!target.IsCallable)
         {
-            ExceptionHelper.ThrowTypeErrorNoEngine("Right-hand side of 'instanceof' is not callable");
+            Throw.TypeErrorNoEngine("Right-hand side of 'instanceof' is not callable");
         }
 
         return target.OrdinaryHasInstance(this);
+    }
+
+    /// <summary>
+    /// https://tc39.es/ecma262/#sec-getmethod
+    /// </summary>
+    internal static ICallable? GetMethod(Realm realm, JsValue v, JsValue p)
+    {
+        // GetMethod uses GetV which converts primitives to objects
+        // https://tc39.es/ecma262/#sec-getv
+        var target = v is ObjectInstance obj ? obj : TypeConverter.ToObject(realm, v);
+        var jsValue = target.Get(p, v);
+        if (jsValue.IsNullOrUndefined())
+        {
+            return null;
+        }
+
+        var callable = jsValue as ICallable;
+        if (callable is null)
+        {
+            Throw.TypeError(realm, $"Value returned for property '{p}' of object is not a function");
+        }
+        return callable;
     }
 
     public override string ToString()
@@ -464,7 +520,7 @@ public abstract partial class JsValue : IEquatable<JsValue>
         var p = Get(CommonProperties.Prototype);
         if (p is not ObjectInstance)
         {
-            ExceptionHelper.ThrowTypeError(o.Engine.Realm, $"Function has non-object prototype '{TypeConverter.ToString(p)}' in instanceof check");
+            Throw.TypeError(o.Engine.Realm, $"Function has non-object prototype '{TypeConverter.ToString(p)}' in instanceof check");
         }
 
         while (true)
@@ -537,6 +593,8 @@ public abstract partial class JsValue : IEquatable<JsValue>
                 return x == y;
             case Types.Object:
                 return x is ObjectWrapper xo && y is ObjectWrapper yo && ReferenceEquals(xo.Target, yo.Target);
+            case Types.BigInt:
+                return (x is JsBigInt xBigInt && y is JsBigInt yBigInt && xBigInt.Equals(yBigInt));
             default:
                 return false;
         }
@@ -546,7 +604,7 @@ public abstract partial class JsValue : IEquatable<JsValue>
     {
         if (!c.IsConstructor)
         {
-            ExceptionHelper.ThrowTypeError(engine.Realm, c + " is not a constructor");
+            Throw.TypeError(engine.Realm, c + " is not a constructor");
         }
 
         return (IConstructor) c;

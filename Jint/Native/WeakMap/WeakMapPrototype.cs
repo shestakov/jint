@@ -1,6 +1,5 @@
 #pragma warning disable CA1859 // Use concrete types when possible for improved performance -- most of prototype methods return JsValue
 
-using Jint.Collections;
 using Jint.Native.Object;
 using Jint.Native.Symbol;
 using Jint.Runtime;
@@ -28,15 +27,17 @@ internal sealed class WeakMapPrototype : Prototype
 
     protected override void Initialize()
     {
-        const PropertyFlag propertyFlags = PropertyFlag.Configurable | PropertyFlag.Writable;
-        var properties = new PropertyDictionary(6, checkExistingKeys: false)
+        const PropertyFlag PropertyFlags = PropertyFlag.Configurable | PropertyFlag.Writable;
+        var properties = new PropertyDictionary(8, checkExistingKeys: false)
         {
             ["length"] = new PropertyDescriptor(0, PropertyFlag.Configurable),
             ["constructor"] = new PropertyDescriptor(_constructor, PropertyFlag.NonEnumerable),
-            ["delete"] = new PropertyDescriptor(new ClrFunction(Engine, "delete", Delete, 1, PropertyFlag.Configurable), propertyFlags),
-            ["get"] = new PropertyDescriptor(new ClrFunction(Engine, "get", Get, 1, PropertyFlag.Configurable), propertyFlags),
-            ["has"] = new PropertyDescriptor(new ClrFunction(Engine, "has", Has, 1, PropertyFlag.Configurable), propertyFlags),
-            ["set"] = new PropertyDescriptor(new ClrFunction(Engine, "set", Set, 2, PropertyFlag.Configurable), propertyFlags),
+            ["delete"] = new PropertyDescriptor(new ClrFunction(Engine, "delete", Delete, 1, PropertyFlag.Configurable), PropertyFlags),
+            ["get"] = new PropertyDescriptor(new ClrFunction(Engine, "get", Get, 1, PropertyFlag.Configurable), PropertyFlags),
+            ["getOrInsert"] = new PropertyDescriptor(new ClrFunction(Engine, "getOrInsert", GetOrInsert, 2, PropertyFlag.Configurable), PropertyFlags),
+            ["getOrInsertComputed"] = new PropertyDescriptor(new ClrFunction(Engine, "getOrInsertComputed", GetOrInsertComputed, 2, PropertyFlag.Configurable), PropertyFlags),
+            ["has"] = new PropertyDescriptor(new ClrFunction(Engine, "has", Has, 1, PropertyFlag.Configurable), PropertyFlags),
+            ["set"] = new PropertyDescriptor(new ClrFunction(Engine, "set", Set, 2, PropertyFlag.Configurable), PropertyFlags),
         };
         SetProperties(properties);
 
@@ -47,26 +48,52 @@ internal sealed class WeakMapPrototype : Prototype
         SetSymbols(symbols);
     }
 
-    private JsValue Get(JsValue thisObject, JsValue[] arguments)
+    private JsValue Get(JsValue thisObject, JsCallArguments arguments)
     {
         var map = AssertWeakMapInstance(thisObject);
         return map.WeakMapGet(arguments.At(0));
     }
 
-    private JsValue Delete(JsValue thisObject, JsValue[] arguments)
+    private JsValue GetOrInsert(JsValue thisObject, JsCallArguments arguments)
+    {
+        var map = AssertWeakMapInstance(thisObject);
+        var key = AssertCanBeHeldWeakly(arguments.At(0));
+        var value = arguments.At(1);
+        return map.GetOrInsert(key, value);
+    }
+
+    private JsValue GetOrInsertComputed(JsValue thisObject, JsCallArguments arguments)
+    {
+        var map = AssertWeakMapInstance(thisObject);
+        var key = AssertCanBeHeldWeakly(arguments.At(0));
+        var callbackfn = arguments.At(1).GetCallable(_realm);
+        return map.GetOrInsertComputed(key, callbackfn);
+    }
+
+    private JsValue AssertCanBeHeldWeakly(JsValue key)
+    {
+        if (!key.CanBeHeldWeakly(_engine.GlobalSymbolRegistry))
+        {
+            Throw.TypeError(_realm);
+        }
+
+        return key;
+    }
+
+    private JsValue Delete(JsValue thisObject, JsCallArguments arguments)
     {
         var map = AssertWeakMapInstance(thisObject);
         return arguments.Length > 0 && map.WeakMapDelete(arguments.At(0)) ? JsBoolean.True : JsBoolean.False;
     }
 
-    private JsValue Set(JsValue thisObject, JsValue[] arguments)
+    private JsValue Set(JsValue thisObject, JsCallArguments arguments)
     {
         var map = AssertWeakMapInstance(thisObject);
         map.WeakMapSet(arguments.At(0), arguments.At(1));
         return thisObject;
     }
 
-    private JsValue Has(JsValue thisObject, JsValue[] arguments)
+    private JsValue Has(JsValue thisObject, JsCallArguments arguments)
     {
         var map = AssertWeakMapInstance(thisObject);
         return map.WeakMapHas(arguments.At(0)) ? JsBoolean.True : JsBoolean.False;
@@ -79,7 +106,7 @@ internal sealed class WeakMapPrototype : Prototype
             return map;
         }
 
-        ExceptionHelper.ThrowTypeError(_realm, "object must be a WeakMap");
+        Throw.TypeError(_realm, "object must be a WeakMap");
         return default;
     }
 }

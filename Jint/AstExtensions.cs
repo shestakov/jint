@@ -27,7 +27,7 @@ public static class AstExtensions
             return TypeConverter.ToPropertyKey(key);
         }
 
-        ExceptionHelper.ThrowArgumentException("Unable to extract correct key, node type: " + expression.Type);
+        Throw.ArgumentException("Unable to extract correct key, node type: " + expression.Type);
         return JsValue.Undefined;
     }
 
@@ -77,10 +77,16 @@ public static class AstExtensions
             or NodeType.ArrowFunctionExpression
             or NodeType.FunctionExpression
             or NodeType.YieldExpression
-            or NodeType.TemplateLiteral)
+            or NodeType.TemplateLiteral
+            or NodeType.ArrayExpression
+            or NodeType.ObjectExpression)
         {
             var context = engine._activeEvaluationContext ?? new EvaluationContext(engine);
-            return JintExpression.Build(expression).GetValue(context);
+            var result = JintExpression.Build(expression).GetValue(context);
+
+            // If the expression suspended the generator (e.g., yield in computed property name),
+            // return the value. The caller should check ExecutionContext.Suspended.
+            return result;
         }
 
         return JsValue.Undefined;
@@ -299,7 +305,7 @@ public static class AstExtensions
         if (expression is Identifier identifier)
         {
             var catchEnvRecord = (DeclarativeEnvironment) env;
-            catchEnvRecord.CreateMutableBindingAndInitialize(identifier.Name, canBeDeleted: false, value);
+            catchEnvRecord.CreateMutableBindingAndInitialize(identifier.Name, canBeDeleted: false, value, DisposeHint.Normal);
         }
         else if (expression is DestructuringPattern pattern)
         {
@@ -324,7 +330,7 @@ public static class AstExtensions
         var function = m.Value as IFunction;
         if (function is null)
         {
-            ExceptionHelper.ThrowSyntaxError(engine.Realm);
+            Throw.SyntaxError(engine.Realm);
         }
 
         var definition = new JintFunctionDefinition(function);
@@ -362,7 +368,7 @@ public static class AstExtensions
     {
         if (importAttributes.Count == 0)
         {
-            return Array.Empty<ModuleImportAttribute>();
+            return [];
         }
 
         var attributes = new ModuleImportAttribute[importAttributes.Count];
@@ -498,6 +504,16 @@ public static class AstExtensions
         validator.Visit(script);
     }
 
+    internal static DisposeHint GetDisposeHint(this VariableDeclarationKind statement)
+    {
+        return statement switch
+        {
+            VariableDeclarationKind.AwaitUsing => DisposeHint.Async,
+            VariableDeclarationKind.Using => DisposeHint.Sync,
+            _ => DisposeHint.Normal,
+        };
+    }
+
     private sealed class MinimalSyntaxElement : Node
     {
         public MinimalSyntaxElement(in SourceLocation location) : base(NodeType.Unknown)
@@ -542,7 +558,7 @@ public static class AstExtensions
         [MethodImpl(MethodImplOptions.NoInlining)]
         private static void Throw(Realm r, PrivateIdentifier id)
         {
-            ExceptionHelper.ThrowSyntaxError(r, $"Private field '#{id.Name}' must be declared in an enclosing class");
+            Runtime.Throw.SyntaxError(r, $"Private field '#{id.Name}' must be declared in an enclosing class");
         }
     }
 }

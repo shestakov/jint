@@ -84,7 +84,7 @@ assertEqual(booleanCount, 1);
         engine
             .SetValue("testFunction", new ClrFunction(engine, "testFunction", (thisValue, args) =>
             {
-                return engine.Invoke(thisValue, "then", new[] { JsValue.Undefined, args.At(0) });
+                return engine.Invoke(thisValue, "then", [JsValue.Undefined, args.At(0)]);
             }))
             .SetValue("assertEqual", new Action<object, object>((a, b) => Assert.Equal(b, a)))
             .Execute(Script);
@@ -142,10 +142,10 @@ assertEqual(booleanCount, 1);
 
         Assert.Equal(5, engine.Evaluate("a"));
 
-        ev(null, new JsValue[0]);
+        ev(null, []);
         Assert.Equal(10, engine.Evaluate("a"));
 
-        ev(null, new JsValue[] { 20 });
+        ev(null, [20]);
         Assert.Equal(30, engine.Evaluate("a"));
     }
 
@@ -174,10 +174,10 @@ assertEqual(booleanCount, 1);
 
         Assert.Equal(5, engine.Evaluate("a"));
 
-        ev(null, new JsValue[0]);
+        ev(null, []);
         Assert.Equal(10, engine.Evaluate("a"));
 
-        ev(null, new JsValue[] { 20 });
+        ev(null, [20]);
         Assert.Equal(30, engine.Evaluate("a"));
     }
 
@@ -196,11 +196,11 @@ assertEqual(booleanCount, 1);
 
         engine.Execute(@"addListener(Boolean)");
 
-        Assert.Equal(true, ev(JsValue.Undefined, new JsValue[] { "test" }));
-        Assert.Equal(true, ev(JsValue.Undefined, new JsValue[] { 5 }));
-        Assert.Equal(false, ev(JsValue.Undefined, new JsValue[] { false }));
-        Assert.Equal(false, ev(JsValue.Undefined, new JsValue[] { 0}));
-        Assert.Equal(false, ev(JsValue.Undefined, new JsValue[] { JsValue.Undefined }));
+        Assert.Equal(true, ev(JsValue.Undefined, ["test"]));
+        Assert.Equal(true, ev(JsValue.Undefined, [5]));
+        Assert.Equal(false, ev(JsValue.Undefined, [false]));
+        Assert.Equal(false, ev(JsValue.Undefined, [0]));
+        Assert.Equal(false, ev(JsValue.Undefined, [JsValue.Undefined]));
     }
 
     [Fact]
@@ -270,5 +270,54 @@ assertEqual(booleanCount, 1);
     {
         const string Script = @"var f = (function() { return z => arguments[0]; }(5)); equal(5, f(6));";
         _engine.Execute(Script);
+    }
+
+    [Fact]
+    public void MultipleCallsShouldNotCacheFunctionEnvironment()
+    {
+        var engine = new Engine();
+        engine.Evaluate(
+            """
+            function findInArray(arr, predicate) {
+                for (let i = 0; i<arr.length; i++) {
+                    if (predicate(arr[i]) === true) {
+                        return arr[i];
+                    }
+                }
+            }
+            function findIt(array, kind) {           
+                let found = findInArray(array, function sub(x) {
+                    return x.kind == kind;
+                });
+                return found;
+            };
+            """);
+        var findIt = (ScriptFunction) engine.GetValue("findIt");
+        var interop = (Func<JsValue, JsValue[], JsValue>) findIt.ToObject()!;
+
+        var values = new List<object>
+        {
+            new { kind = 'a' },
+            new { kind = 'b' }
+        };
+
+        var found1 = interop(
+            JsValue.Undefined,
+            [
+                JsValue.FromObject(engine, values),
+                JsValue.FromObject(engine, "a")
+            ])
+            .ToObject();
+
+        var found2 = interop(
+            JsValue.Undefined,
+            [
+                JsValue.FromObject(engine, values),
+                JsValue.FromObject(engine, "b")
+            ])
+            .ToObject();
+
+        Assert.Equal(values[0], found1);
+        Assert.Equal(values[1], found2);
     }
 }

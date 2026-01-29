@@ -18,7 +18,7 @@ namespace Jint.Collections;
 /// 3) It does not accept an equality comparer (assumes Object.GetHashCode() and Object.Equals() or overridden implementation are cheap and sufficient).
 /// </summary>
 [DebuggerDisplay("Count = {Count}")]
-internal class DictionarySlim<TKey, TValue> : IReadOnlyCollection<KeyValuePair<TKey, TValue>> where TKey : IEquatable<TKey>
+internal sealed class DictionarySlim<TKey, TValue> : IReadOnlyCollection<KeyValuePair<TKey, TValue>> where TKey : IEquatable<TKey>
 {
     // We want to initialize without allocating arrays. We also want to avoid null checks.
     // Array.Empty would give divide by zero in modulo operation. So we use static one element arrays.
@@ -75,8 +75,8 @@ internal class DictionarySlim<TKey, TValue> : IReadOnlyCollection<KeyValuePair<T
     public bool ContainsKey(TKey key)
     {
         Entry[] entries = _entries;
-        for (int i = _buckets[key.GetHashCode() & (_buckets.Length-1)] - 1;
-             (uint)i < (uint)entries.Length; i = entries[i].next)
+        for (int i = _buckets[key.GetHashCode() & (_buckets.Length - 1)] - 1;
+             (uint) i < (uint) entries.Length; i = entries[i].next)
         {
             if (key.Equals(entries[i].key))
                 return true;
@@ -89,7 +89,7 @@ internal class DictionarySlim<TKey, TValue> : IReadOnlyCollection<KeyValuePair<T
     {
         Entry[] entries = _entries;
         for (int i = _buckets[key.GetHashCode() & (_buckets.Length - 1)] - 1;
-             (uint)i < (uint)entries.Length; i = entries[i].next)
+             (uint) i < (uint) entries.Length; i = entries[i].next)
         {
             if (key.Equals(entries[i].key))
             {
@@ -152,7 +152,7 @@ internal class DictionarySlim<TKey, TValue> : IReadOnlyCollection<KeyValuePair<T
         Entry[] entries = _entries;
         int bucketIndex = key.GetHashCode() & (_buckets.Length - 1);
         for (int i = _buckets[bucketIndex] - 1;
-             (uint)i < (uint)entries.Length; i = entries[i].next)
+             (uint) i < (uint) entries.Length; i = entries[i].next)
         {
             if (key.Equals(entries[i].key))
                 return ref entries[i].value;
@@ -200,7 +200,7 @@ internal class DictionarySlim<TKey, TValue> : IReadOnlyCollection<KeyValuePair<T
         Debug.Assert(_entries.Length == _count || _entries.Length == 1); // We only copy _count, so if it's longer we will miss some
         int count = _count;
         int newSize = _entries.Length * 2;
-        if ((uint)newSize > (uint)int.MaxValue) // uint cast handles overflow
+        if ((uint) newSize > int.MaxValue) // uint cast handles overflow
             throw new InvalidOperationException("Capacity Overflow");
 
         var entries = new Entry[newSize];

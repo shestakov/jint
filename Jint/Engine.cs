@@ -1,7 +1,7 @@
 ﻿using System.Diagnostics;
-using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
+using Jint.Collections;
 using Jint.Native;
 using Jint.Native.Function;
 using Jint.Native.Generator;
@@ -39,6 +39,7 @@ public sealed partial class Engine : IDisposable
     internal ErrorDispatchInfo? _error;
 
     private readonly EventLoop _eventLoop = new();
+    internal EventLoop EventLoop => _eventLoop;
 
     private readonly Agent _agent = new();
 
@@ -51,7 +52,7 @@ public sealed partial class Engine : IDisposable
     internal readonly bool _isDebugMode;
     internal readonly bool _isStrict;
 
-    private bool _customResolver;
+    private readonly bool _customResolver;
     internal readonly IReferenceResolver _referenceResolver;
 
     internal readonly ReferencePool _referencePool;
@@ -403,7 +404,7 @@ public sealed partial class Engine : IDisposable
     {
         if (!preparedScript.IsValid)
         {
-            ExceptionHelper.ThrowInvalidPreparedScriptArgumentException(nameof(preparedScript));
+            Throw.InvalidPreparedScriptArgumentException(nameof(preparedScript));
         }
 
         var script = preparedScript.Program;
@@ -493,16 +494,66 @@ public sealed partial class Engine : IDisposable
 
         Action<JsValue> SettleWith(Function settle) => value =>
         {
-            settle.Call(JsValue.Undefined, new[] { value });
+            // Enqueue to event loop to ensure thread safety - the settle operation
+            // may be called from a background thread (e.g., Task.ContinueWith callback)
+            // but JavaScript execution must happen on the thread that owns the Engine.
+            AddToEventLoop(() =>
+            {
+                settle.Call(JsValue.Undefined, [value]);
+            });
+
+            // Signal the CompletedEvent so that UnwrapIfPromise knows there's work to process.
+            promise.CompletedEvent.Set();
+
+            // Try to run continuations. If we're on a background thread and there's a
+            // waiting thread (in UnwrapIfPromise), this will be a no-op and the waiting
+            // thread will process instead. If we're on the main thread (direct Resolve call),
+            // this will process the continuations immediately.
             RunAvailableContinuations();
         };
 
         return new ManualPromise(promise, SettleWith(resolve), SettleWith(reject));
     }
 
+    /// <summary>
+    /// Internal version of RegisterPromise that returns settle functions accepting CLR objects.
+    /// The CLR to JsValue conversion happens on the event loop thread, not the caller thread.
+    /// This is critical for thread safety when called from Task.ContinueWith callbacks.
+    /// </summary>
+    internal ManualPromiseWithClrValue RegisterPromiseWithClrValue()
+    {
+        var promise = new JsPromise(this)
+        {
+            _prototype = Realm.Intrinsics.Promise.PrototypeObject
+        };
+
+        var (resolve, reject) = promise.CreateResolvingFunctions();
+
+        Action<object?> SettleWithClr(Function settle) => clrValue =>
+        {
+            // Enqueue to event loop to ensure thread safety - both the FromObject conversion
+            // and the settle operation are performed on the main thread, not the background
+            // thread that completed the Task.
+            AddToEventLoop(() =>
+            {
+                var jsValue = JsValue.FromObject(this, clrValue);
+                settle.Call(JsValue.Undefined, [jsValue]);
+            });
+
+            // Signal the CompletedEvent so that UnwrapIfPromise knows there's work to process.
+            // NOTE: We do NOT call RunAvailableContinuations() here because this method is
+            // called from background threads (Task.ContinueWith callbacks) and the _waitingThreadId
+            // protection might not be active yet. The waiting thread in UnwrapIfPromise will
+            // process the event loop when it wakes up.
+            promise.CompletedEvent.Set();
+        };
+
+        return new ManualPromiseWithClrValue(promise, SettleWithClr(resolve), SettleWithClr(reject));
+    }
+
     internal void AddToEventLoop(Action continuation)
     {
-        _eventLoop.Events.Enqueue(continuation);
+        _eventLoop.Enqueue(continuation);
     }
 
     internal void AddToKeptObjects(JsValue target)
@@ -512,17 +563,7 @@ public sealed partial class Engine : IDisposable
 
     internal void RunAvailableContinuations()
     {
-        var queue = _eventLoop.Events;
-        DoProcessEventLoop(queue);
-    }
-
-    private static void DoProcessEventLoop(ConcurrentQueue<Action> queue)
-    {
-        while (queue.TryDequeue(out var nextContinuation))
-        {
-            // note that continuation can enqueue new events
-            nextContinuation();
-        }
+        _eventLoop.RunAvailableContinuations();
     }
 
     internal void RunBeforeExecuteStatementChecks(StatementOrExpression? statement)
@@ -566,7 +607,7 @@ public sealed partial class Engine : IDisposable
     {
         var baseValue = reference.Base;
 
-        if (baseValue.IsUndefined())
+        if (reference.IsUnresolvableReference)
         {
             if (_customResolver)
             {
@@ -577,7 +618,7 @@ public sealed partial class Engine : IDisposable
                 }
             }
 
-            ExceptionHelper.ThrowReferenceError(Realm, reference);
+            Throw.ReferenceError(Realm, reference);
         }
 
         if ((baseValue._type & InternalTypes.ObjectEnvironmentRecord) == InternalTypes.Empty && _customResolver)
@@ -595,6 +636,11 @@ public sealed partial class Engine : IDisposable
             if (returnReferenceToPool)
             {
                 _referencePool.Return(reference);
+            }
+
+            if (baseValue.IsNullOrUndefined())
+            {
+                ThrowPropertyNotFound(property, baseValue);
             }
 
             if (baseValue.IsObject())
@@ -645,6 +691,29 @@ public sealed partial class Engine : IDisposable
         return bindingValue;
     }
 
+    private void ThrowPropertyNotFound(JsValue property, JsValue baseValue)
+    {
+        // Avoid calling ToString() on the property as it may have a custom toString that throws
+        string propertyName;
+        if (property.IsSymbol())
+        {
+            propertyName = "[Symbol]";
+        }
+        else if (property.IsString())
+        {
+            propertyName = property.ToString();
+        }
+        else if (property.IsNumber())
+        {
+            propertyName = Runtime.TypeConverter.ToString(property);
+        }
+        else
+        {
+            propertyName = "unknown";
+        }
+        Throw.TypeError(Realm, $"Cannot read property '{propertyName}' of {baseValue}");
+    }
+
     private bool TryHandleStringValue(JsValue property, JsString s, ref ObjectInstance? o, out JsValue jsValue)
     {
         if (CommonProperties.Length.Equals(property))
@@ -686,7 +755,7 @@ public sealed partial class Engine : IDisposable
         {
             if (reference.Strict && property != CommonProperties.Arguments)
             {
-                ExceptionHelper.ThrowReferenceError(Realm, reference);
+                Throw.ReferenceError(Realm, reference);
             }
 
             Realm.GlobalObject.Set(property, value, throwOnError: false);
@@ -704,7 +773,7 @@ public sealed partial class Engine : IDisposable
             var succeeded = baseObject.Set(reference.ReferencedName, value, reference.ThisValue);
             if (!succeeded && reference.Strict)
             {
-                ExceptionHelper.ThrowTypeError(Realm, "Cannot assign to read only property '" + property + "' of " + baseObject);
+                Throw.TypeError(Realm, $"Cannot assign to read only property '{property}' of {baseObject}");
             }
         }
         else
@@ -761,7 +830,7 @@ public sealed partial class Engine : IDisposable
         var callable = value as ICallable;
         if (callable is null)
         {
-            ExceptionHelper.ThrowJavaScriptException(Realm.Intrinsics.TypeError, "Can only invoke functions");
+            Throw.JavaScriptException(Realm.Intrinsics.TypeError, "Can only invoke functions");
         }
 
         JsValue DoInvoke()
@@ -832,7 +901,7 @@ public sealed partial class Engine : IDisposable
     /// <summary>
     /// https://tc39.es/ecma262/#sec-invoke
     /// </summary>
-    internal JsValue Invoke(JsValue v, JsValue p, JsValue[] arguments)
+    internal JsValue Invoke(JsValue v, JsValue p, JsCallArguments arguments)
     {
         var ownsContext = _activeEvaluationContext is null;
         _activeEvaluationContext ??= new EvaluationContext(this);
@@ -842,7 +911,7 @@ public sealed partial class Engine : IDisposable
             var callable = func as ICallable;
             if (callable is null)
             {
-                ExceptionHelper.ThrowTypeErrorNoEngine("Can only invoke functions");
+                Throw.TypeErrorNoEngine("Can only invoke functions");
             }
 
             return callable.Call(v, arguments);
@@ -906,18 +975,21 @@ public sealed partial class Engine : IDisposable
 
     private static Reference GetIdentifierReference(Environment? env, string name, bool strict)
     {
-        if (env is null)
+        Key key = name;
+        while (true)
         {
-            return new Reference(JsValue.Undefined, name, strict);
-        }
+            if (env is null)
+            {
+                return new Reference(Reference.Unresolvable, name, strict);
+            }
 
-        var envRec = env;
-        if (envRec.HasBinding(name))
-        {
-            return new Reference(envRec, name, strict);
-        }
+            if (env.HasBinding(key))
+            {
+                return new Reference(env, name, strict);
+            }
 
-        return GetIdentifierReference(env._outerEnv, name, strict);
+            env = env._outerEnv;
+        }
     }
 
     /// <summary>
@@ -966,7 +1038,7 @@ public sealed partial class Engine : IDisposable
                     var fnDefinable = env.CanDeclareGlobalFunction(fn);
                     if (!fnDefinable)
                     {
-                        ExceptionHelper.ThrowTypeError(realm, "Cannot declare global function " + fn);
+                        Throw.TypeError(realm, "Cannot declare global function " + fn);
                     }
 
                     declaredFunctionNames.Add(fn);
@@ -981,7 +1053,7 @@ public sealed partial class Engine : IDisposable
             var vn = varNames[j];
             if (env.HasLexicalDeclaration(vn))
             {
-                ExceptionHelper.ThrowSyntaxError(realm, $"Identifier '{vn}' has already been declared");
+                Throw.SyntaxError(realm, $"Identifier '{vn}' has already been declared");
             }
 
             if (!declaredFunctionNames.Contains(vn))
@@ -989,7 +1061,7 @@ public sealed partial class Engine : IDisposable
                 var vnDefinable = env.CanDeclareGlobalVar(vn);
                 if (!vnDefinable)
                 {
-                    ExceptionHelper.ThrowTypeError(realm);
+                    Throw.TypeError(realm);
                 }
 
                 declaredVarNames.Add(vn);
@@ -1000,19 +1072,22 @@ public sealed partial class Engine : IDisposable
         var lexNames = script.GetLexNames(hoistingScope);
         for (var i = 0; i < lexNames.Count; i++)
         {
-            var (dn, constant) = lexNames[i];
-            if (env.HasLexicalDeclaration(dn) || env.HasRestrictedGlobalProperty(dn))
+            var declaration = lexNames[i];
+            foreach (var dn in declaration.BoundNames)
             {
-                ExceptionHelper.ThrowSyntaxError(realm, $"Identifier '{dn}' has already been declared");
-            }
+                if (env.HasLexicalDeclaration(dn) || env.HasRestrictedGlobalProperty(dn))
+                {
+                    Throw.SyntaxError(realm, $"Identifier '{dn}' has already been declared");
+                }
 
-            if (constant)
-            {
-                env.CreateImmutableBinding(dn, strict: true);
-            }
-            else
-            {
-                env.CreateMutableBinding(dn, canBeDeleted: false);
+                if (declaration.IsConstantDeclaration)
+                {
+                    env.CreateImmutableBinding(dn, strict: true);
+                }
+                else
+                {
+                    env.CreateMutableBinding(dn, canBeDeleted: false);
+                }
             }
         }
 
@@ -1024,7 +1099,7 @@ public sealed partial class Engine : IDisposable
 
             if (env.HasLexicalDeclaration(fn))
             {
-                ExceptionHelper.ThrowSyntaxError(realm, $"Identifier '{fn}' has already been declared");
+                Throw.SyntaxError(realm, $"Identifier '{fn}' has already been declared");
             }
 
             var fo = realm.Intrinsics.Function.InstantiateFunctionObject(f, env, privateEnv);
@@ -1039,7 +1114,7 @@ public sealed partial class Engine : IDisposable
     /// </summary>
     internal JsArguments? FunctionDeclarationInstantiation(
         Function function,
-        JsValue[] argumentsList)
+        JsCallArguments argumentsList)
     {
         var calleeContext = ExecutionContext;
         var func = function._functionDefinition;
@@ -1052,6 +1127,10 @@ public sealed partial class Engine : IDisposable
         var hasDuplicates = configuration.HasDuplicates;
         var simpleParameterList = configuration.IsSimpleParameterList;
         var hasParameterExpressions = configuration.HasParameterExpressions;
+        if (configuration.RequiresInputArgumentsOwnership)
+        {
+            argumentsList = [.. argumentsList];
+        }
 
         var canInitializeParametersOnDeclaration = simpleParameterList && !configuration.HasDuplicates;
         var arguments = canInitializeParametersOnDeclaration ? argumentsList : null;
@@ -1073,18 +1152,68 @@ public sealed partial class Engine : IDisposable
 
             if (strict)
             {
-                env.CreateImmutableBindingAndInitialize(KnownKeys.Arguments, strict: false, ao);
+                env.CreateImmutableBindingAndInitialize(KnownKeys.Arguments, strict: false, ao, DisposeHint.Normal);
             }
             else
             {
-                env.CreateMutableBindingAndInitialize(KnownKeys.Arguments, canBeDeleted: false, ao);
+                env.CreateMutableBindingAndInitialize(KnownKeys.Arguments, canBeDeleted: false, ao, DisposeHint.Normal);
             }
+        }
+
+        // Per ECMAScript spec 10.2.11:
+        // When hasParameterExpressions is true, we need to create varEnv BEFORE evaluating parameter defaults
+        // so that eval called during parameter initialization uses the correct VariableEnvironment.
+        // This ensures:
+        // 1. Vars declared by eval in parameter expressions go to the right varEnv
+        // 2. EvalDeclarationInstantiation can detect conflicts between eval vars and parameter names
+        DeclarativeEnvironment varEnv;
+        if (!hasParameterExpressions)
+        {
+            // NOTE: Only a single lexical environment is needed for the parameters and top-level vars.
+            var varsToInitialize = configuration.VarsToInitialize!;
+            for (var i = 0; i < varsToInitialize.Count; i++)
+            {
+                var pair = varsToInitialize[i];
+                env.CreateMutableBindingAndInitialize(pair.Name, canBeDeleted: false, JsValue.Undefined, DisposeHint.Normal);
+            }
+
+            varEnv = env;
+        }
+        else
+        {
+            // Per ECMAScript spec 10.2.11 step 20:
+            // Create a separate environment (paramEnv) for parameter evaluation.
+            // This is where eval'd vars during parameter initialization go.
+            // Closures created during parameter evaluation capture this environment.
+            var paramEnv = JintEnvironment.NewDeclarativeEnvironment(this, env);
+
+            // Step 20.f and 20.g: Set BOTH VariableEnvironment AND LexicalEnvironment to paramEnv
+            // before evaluating parameter defaults. This ensures:
+            // 1. Vars declared by eval in parameter expressions go to paramEnv
+            // 2. Closures created during parameter evaluation capture paramEnv
+            UpdateVariableEnvironment(paramEnv);
+            UpdateLexicalEnvironment(paramEnv);
+
+            // Per ECMAScript spec step 27-28:
+            // Create another separate environment (varEnv) for function body vars.
+            // This ensures closures in params do NOT have visibility of body declarations.
+            varEnv = JintEnvironment.NewDeclarativeEnvironment(this, paramEnv);
         }
 
         if (!canInitializeParametersOnDeclaration)
         {
-            // slower set
+            // Slower path - evaluate parameter defaults.
+            // At this point, if hasParameterExpressions:
+            // - VariableEnvironment = paramEnv (for eval vars during param init)
+            // - LexicalEnvironment = paramEnv (for closures to capture)
             env.AddFunctionParameters(_activeEvaluationContext!, func.Function, argumentsList);
+        }
+
+        // After parameter initialization, switch VariableEnvironment to varEnv for body vars
+        // Per ECMAScript spec step 27-28
+        if (hasParameterExpressions)
+        {
+            UpdateVariableEnvironment(varEnv);
         }
 
         // Let iteratorRecord be CreateListIteratorRecord(argumentsList).
@@ -1093,42 +1222,23 @@ public sealed partial class Engine : IDisposable
         // Else,
         //     Perform ? IteratorBindingInitialization for formals with iteratorRecord and env as arguments.
 
-        Environment varEnv;
-        if (!hasParameterExpressions)
+        // Now initialize var bindings in varEnv (after parameters are evaluated)
+        if (hasParameterExpressions)
         {
-            // NOTE: Only a single lexical environment is needed for the parameters and top-level vars.
-            var varsToInitialize = configuration.VarsToInitialize!;
-            for (var i = 0; i < varsToInitialize.Count; i++)
-            {
-                var pair = varsToInitialize[i];
-                env.CreateMutableBindingAndInitialize(pair.Name, canBeDeleted: false, JsValue.Undefined);
-            }
-
-            varEnv = env;
-        }
-        else
-        {
-            // NOTE: A separate Environment Record is needed to ensure that closures created by expressions
-            // in the formal parameter list do not have visibility of declarations in the function body.
-            var varEnvRec = JintEnvironment.NewDeclarativeEnvironment(this, env);
-            varEnv = varEnvRec;
-
-            UpdateVariableEnvironment(varEnv);
-
             var varsToInitialize = configuration.VarsToInitialize!;
             for (var i = 0; i < varsToInitialize.Count; i++)
             {
                 var pair = varsToInitialize[i];
                 var initialValue = pair.InitialValue ?? env.GetBindingValue(pair.Name, strict: false);
-                varEnvRec.CreateMutableBindingAndInitialize(pair.Name, canBeDeleted: false, initialValue);
+                varEnv.CreateMutableBindingAndInitialize(pair.Name, canBeDeleted: false, initialValue, DisposeHint.Normal);
             }
         }
 
         // NOTE: Annex B.3.3.1 adds additional steps at this point.
         // A https://tc39.es/ecma262/#sec-web-compat-functiondeclarationinstantiation
 
-        Environment lexEnv;
-        if (!strict)
+        DeclarativeEnvironment lexEnv;
+        if (configuration.NeedsEvalContext || _isDebugMode)
         {
             lexEnv = JintEnvironment.NewDeclarativeEnvironment(this, varEnv);
             // NOTE: Non-strict functions use a separate lexical Environment Record for top-level lexical declarations
@@ -1143,23 +1253,31 @@ public sealed partial class Engine : IDisposable
 
         UpdateLexicalEnvironment(lexEnv);
 
-        if (configuration.LexicalDeclarations.Length > 0)
+        var declarations = configuration.LexicalDeclarations;
+        if (declarations?.Declarations.Count > 0)
         {
-            foreach (var d in configuration.LexicalDeclarations)
+            var lexicalDeclarations = declarations.Value.Declarations;
+            var checkExistingKeys = (lexEnv._dictionary is not null && lexEnv._dictionary.Count > 0) || !declarations.Value.AllLexicalScoped;
+            var dictionary = lexEnv._dictionary ??= new HybridDictionary<Binding>(lexicalDeclarations.Count, checkExistingKeys);
+            dictionary.EnsureCapacity(dictionary.Count + lexicalDeclarations.Count);
+
+            for (var i = 0; i < lexicalDeclarations.Count; i++)
             {
-                for (var j = 0; j < d.BoundNames.Count; j++)
+                var declaration = lexicalDeclarations[i];
+                foreach (var bn in declaration.BoundNames)
                 {
-                    var dn = d.BoundNames[j];
-                    if (d.IsConstantDeclaration)
+                    if (declaration.IsConstantDeclaration)
                     {
-                        lexEnv.CreateImmutableBinding(dn, strict: true);
+                        dictionary.CreateImmutableBinding(bn, strict);
                     }
                     else
                     {
-                        lexEnv.CreateMutableBinding(dn, canBeDeleted: false);
+                        dictionary.CreateMutableBinding(bn, canBeDeleted: false);
                     }
                 }
             }
+
+            dictionary.CheckExistingKeys = true;
         }
 
         if (configuration.FunctionsToInitialize != null)
@@ -1181,14 +1299,14 @@ public sealed partial class Engine : IDisposable
     private JsArguments CreateMappedArgumentsObject(
         Function func,
         Key[] formals,
-        JsValue[] argumentsList,
+        JsCallArguments argumentsList,
         DeclarativeEnvironment envRec,
         bool hasRestParameter)
     {
         return _argumentsInstancePool.Rent(func, formals, argumentsList, envRec, hasRestParameter);
     }
 
-    private JsArguments CreateUnmappedArgumentsObject(JsValue[] argumentsList)
+    private JsArguments CreateUnmappedArgumentsObject(JsCallArguments argumentsList)
     {
         return _argumentsInstancePool.Rent(argumentsList);
     }
@@ -1221,13 +1339,13 @@ public sealed partial class Engine : IDisposable
                     var identifier = (Identifier) variablesDeclaration.Declarations[0].Id;
                     if (globalEnvironmentRecord.HasLexicalDeclaration(identifier.Name))
                     {
-                        ExceptionHelper.ThrowSyntaxError(realm, "Identifier '" + identifier.Name + "' has already been declared");
+                        Throw.SyntaxError(realm, "Identifier '" + identifier.Name + "' has already been declared");
                     }
                 }
             }
 
             var thisLex = lexEnv;
-            while (!ReferenceEquals(thisLex, varEnv))
+            while (thisLex is not null && !ReferenceEquals(thisLex, varEnv))
             {
                 var thisEnvRec = thisLex;
                 if (thisEnvRec is not ObjectEnvironment)
@@ -1237,14 +1355,35 @@ public sealed partial class Engine : IDisposable
                     {
                         var variablesDeclaration = nodes[i];
                         var identifier = (Identifier) variablesDeclaration.Declarations[0].Id;
-                        if (thisEnvRec!.HasBinding(identifier.Name))
+                        if (thisEnvRec.HasBinding(identifier.Name))
                         {
-                            ExceptionHelper.ThrowSyntaxError(realm);
+                            Throw.SyntaxError(realm);
                         }
                     }
                 }
 
-                thisLex = thisLex!._outerEnv;
+                thisLex = thisLex._outerEnv;
+            }
+
+            // When varEnv is a separate parameter environment (hasParameterExpressions case),
+            // we also need to check varEnv's outer for parameter bindings.
+            // This handles the case where parameters are in the FunctionEnvironment (varEnv's outer)
+            // but eval vars go to varEnv (the separate parameter environment).
+            // The while loop above walks from lexEnv to varEnv, but doesn't check varEnv's outer.
+            // Note: We only do this when varEnv is NOT a FunctionEnvironment - if it is, then
+            // this is a simple function without hasParameterExpressions and we don't need this check.
+            if (varEnv is DeclarativeEnvironment and not FunctionEnvironment && varEnv._outerEnv is FunctionEnvironment funcEnv)
+            {
+                ref readonly var nodes = ref hoistingScope._variablesDeclarations;
+                for (var i = 0; i < nodes.Count; i++)
+                {
+                    var variablesDeclaration = nodes[i];
+                    var identifier = (Identifier) variablesDeclaration.Declarations[0].Id;
+                    if (funcEnv.HasBinding(identifier.Name))
+                    {
+                        Throw.SyntaxError(realm);
+                    }
+                }
             }
         }
 
@@ -1280,7 +1419,7 @@ public sealed partial class Engine : IDisposable
                         var fnDefinable = ger.CanDeclareGlobalFunction(fn);
                         if (!fnDefinable)
                         {
-                            ExceptionHelper.ThrowTypeError(realm);
+                            Throw.TypeError(realm);
                         }
                     }
 
@@ -1309,7 +1448,7 @@ public sealed partial class Engine : IDisposable
                         var vnDefinable = ger.CanDeclareGlobalFunction(vn);
                         if (!vnDefinable)
                         {
-                            ExceptionHelper.ThrowTypeError(realm);
+                            Throw.TypeError(realm);
                         }
                     }
 
@@ -1353,7 +1492,7 @@ public sealed partial class Engine : IDisposable
                 if (!bindingExists)
                 {
                     varEnvRec.CreateMutableBinding(fn, canBeDeleted: true);
-                    varEnvRec.InitializeBinding(fn, fo);
+                    varEnvRec.InitializeBinding(fn, fo, DisposeHint.Normal);
                 }
                 else
                 {
@@ -1374,7 +1513,7 @@ public sealed partial class Engine : IDisposable
                 if (!bindingExists)
                 {
                     varEnvRec.CreateMutableBinding(vn, canBeDeleted: true);
-                    varEnvRec.InitializeBinding(vn, JsValue.Undefined);
+                    varEnvRec.InitializeBinding(vn, JsValue.Undefined, DisposeHint.Normal);
                 }
             }
         }
@@ -1404,13 +1543,19 @@ public sealed partial class Engine : IDisposable
         return ref _executionContexts.ReplaceTopGenerator(generator);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal ref readonly ExecutionContext UpdateAsyncGenerator(Native.AsyncGenerator.AsyncGeneratorInstance asyncGenerator)
+    {
+        return ref _executionContexts.ReplaceTopAsyncGenerator(asyncGenerator);
+    }
+
     /// <summary>
     /// Invokes the named callable and returns the resulting object.
     /// </summary>
     /// <param name="callableName">The name of the callable.</param>
     /// <param name="arguments">The arguments of the call.</param>
     /// <returns>The value returned by the call.</returns>
-    public JsValue Call(string callableName, params JsValue[] arguments)
+    public JsValue Call(string callableName, params JsCallArguments arguments)
     {
         var callable = Evaluate(callableName);
         return Call(callable, arguments);
@@ -1422,7 +1567,7 @@ public sealed partial class Engine : IDisposable
     /// <param name="callable">The callable.</param>
     /// <param name="arguments">The arguments of the call.</param>
     /// <returns>The value returned by the call.</returns>
-    public JsValue Call(JsValue callable, params JsValue[] arguments)
+    public JsValue Call(JsValue callable, params JsCallArguments arguments)
         => Call(callable, thisObject: JsValue.Undefined, arguments);
 
     /// <summary>
@@ -1432,13 +1577,13 @@ public sealed partial class Engine : IDisposable
     /// <param name="thisObject">Value bound as this.</param>
     /// <param name="arguments">The arguments of the call.</param>
     /// <returns>The value returned by the call.</returns>
-    public JsValue Call(JsValue callable, JsValue thisObject, JsValue[] arguments)
+    public JsValue Call(JsValue callable, JsValue thisObject, JsCallArguments arguments)
     {
         JsValue Callback()
         {
             if (!callable.IsCallable)
             {
-                ExceptionHelper.ThrowArgumentException(callable + " is not callable");
+                Throw.ArgumentException(callable + " is not callable");
             }
 
             return Call((ICallable) callable, thisObject, arguments, null);
@@ -1448,7 +1593,7 @@ public sealed partial class Engine : IDisposable
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal JsValue Call(ICallable callable, JsValue thisObject, JsValue[] arguments, JintExpression? expression)
+    internal JsValue Call(ICallable callable, JsValue thisObject, JsCallArguments arguments, JintExpression? expression)
     {
         if (callable is Function functionInstance)
         {
@@ -1464,7 +1609,7 @@ public sealed partial class Engine : IDisposable
     /// <param name="constructorName">The name of the constructor to call.</param>
     /// <param name="arguments">The arguments of the constructor call.</param>
     /// <returns>The value returned by the constructor call.</returns>
-    public ObjectInstance Construct(string constructorName, params JsValue[] arguments)
+    public ObjectInstance Construct(string constructorName, params JsCallArguments arguments)
     {
         var constructor = Evaluate(constructorName);
         return Construct(constructor, arguments);
@@ -1476,13 +1621,13 @@ public sealed partial class Engine : IDisposable
     /// <param name="constructor">The name of the constructor to call.</param>
     /// <param name="arguments">The arguments of the constructor call.</param>
     /// <returns>The value returned by the constructor call.</returns>
-    public ObjectInstance Construct(JsValue constructor, params JsValue[] arguments)
+    public ObjectInstance Construct(JsValue constructor, params JsCallArguments arguments)
     {
         ObjectInstance Callback()
         {
             if (!constructor.IsConstructor)
             {
-                ExceptionHelper.ThrowArgumentException(constructor + " is not a constructor");
+                Throw.ArgumentException(constructor + " is not a constructor");
             }
 
             return Construct(constructor, arguments, constructor, null);
@@ -1493,7 +1638,7 @@ public sealed partial class Engine : IDisposable
 
     internal ObjectInstance Construct(
         JsValue constructor,
-        JsValue[] arguments,
+        JsCallArguments arguments,
         JsValue newTarget,
         JintExpression? expression)
     {
@@ -1511,7 +1656,7 @@ public sealed partial class Engine : IDisposable
     internal JsValue Call(
         Function function,
         JsValue thisObject,
-        JsValue[] arguments,
+        JsCallArguments arguments,
         JintExpression? expression)
     {
         // ensure logic is in sync between Call, Construct, engine.Invoke and JintCallExpression!
@@ -1521,7 +1666,7 @@ public sealed partial class Engine : IDisposable
         if (recursionDepth > Options.Constraints.MaxRecursionDepth)
         {
             // automatically pops the current element as it was never reached
-            ExceptionHelper.ThrowRecursionDepthOverflowException(CallStack);
+            Throw.RecursionDepthOverflowException(CallStack);
         }
 
         JsValue result;
@@ -1543,7 +1688,7 @@ public sealed partial class Engine : IDisposable
 
     private ObjectInstance Construct(
         Function function,
-        JsValue[] arguments,
+        JsCallArguments arguments,
         JsValue newTarget,
         JintExpression? expression)
     {
@@ -1554,7 +1699,7 @@ public sealed partial class Engine : IDisposable
         if (recursionDepth > Options.Constraints.MaxRecursionDepth)
         {
             // automatically pops the current element as it was never reached
-            ExceptionHelper.ThrowRecursionDepthOverflowException(CallStack);
+            Throw.RecursionDepthOverflowException(CallStack);
         }
 
         ObjectInstance result;
@@ -1594,11 +1739,11 @@ public sealed partial class Engine : IDisposable
         }
 
 #if SUPPORTS_WEAK_TABLE_CLEAR
-            _objectWrapperCache.Clear();
+        _objectWrapperCache.Clear();
 #else
         // we can expect that reflection is OK as we've been generating object wrappers already
         var clearMethod = _objectWrapperCache.GetType().GetMethod("Clear", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
-        clearMethod?.Invoke(_objectWrapperCache, Array.Empty<object>());
+        clearMethod?.Invoke(_objectWrapperCache, []);
 #endif
     }
 

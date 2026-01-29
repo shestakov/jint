@@ -79,7 +79,7 @@ internal abstract class ArrayOperations : IEnumerable<JsValue>
     public abstract JsValue Get(ulong index);
 
     public virtual JsValue[] GetAll(
-        Types elementTypes = Types.Undefined | Types.Null | Types.Boolean | Types.String | Types.Symbol | Types.Number | Types.Object,
+        Types elementTypes = Types.Undefined | Types.Null | Types.Boolean | Types.String | Types.Symbol | Types.Number | Types.BigInt | Types.Object,
         bool skipHoles = false)
     {
         uint writeIndex = 0;
@@ -90,7 +90,7 @@ internal abstract class ArrayOperations : IEnumerable<JsValue>
             var jsValue = skipHoles && !HasProperty(i) ? JsValue.Undefined : Get(i);
             if ((jsValue.Type & elementTypes) == Types.Empty)
             {
-                ExceptionHelper.ThrowTypeErrorNoEngine("invalid type");
+                Throw.TypeErrorNoEngine("invalid type");
             }
 
             jsValues[writeIndex++] = jsValue;
@@ -265,13 +265,15 @@ internal abstract class ArrayOperations : IEnumerable<JsValue>
 
         public override JsValue Get(ulong index) => _target.Get((uint) index);
 
-        public override JsValue[] GetAll(Types elementTypes = Types.Undefined | Types.Null | Types.Boolean | Types.String | Types.Symbol | Types.Number | Types.Object, bool skipHoles = false)
+        public override JsValue[] GetAll(
+            Types elementTypes = Types.Empty | Types.Undefined | Types.Null | Types.Boolean | Types.String | Types.Number | Types.Symbol | Types.BigInt | Types.Object,
+            bool skipHoles = false)
         {
             var n = _target.GetLength();
 
             if (_target._dense == null || _target._dense.Length < n)
             {
-                return base.GetAll(elementTypes);
+                return base.GetAll(elementTypes, skipHoles);
             }
 
             // optimized
@@ -287,7 +289,7 @@ internal abstract class ArrayOperations : IEnumerable<JsValue>
 
                 if ((value.Type & elementTypes) == Types.Empty)
                 {
-                    ExceptionHelper.ThrowTypeErrorNoEngine("invalid type");
+                    Throw.TypeErrorNoEngine("invalid type");
                 }
 
                 jsValues[writeIndex++] = (JsValue?) value ?? JsValue.Undefined;
@@ -436,7 +438,7 @@ internal abstract class ArrayOperations : IEnumerable<JsValue>
         public ArrayReadOperations(JsArray target)
         {
             _target = target;
-            _data = target._dense ?? System.Array.Empty<JsValue>();
+            _data = target._dense ?? [];
             _length = target.Length;
         }
 
@@ -600,7 +602,7 @@ internal abstract class ArrayOperations : IEnumerable<JsValue>
 
         public override void EnsureCapacity(ulong capacity)
         {
-            _target.EnsureCapacity((int)capacity);
+            _target.EnsureCapacity((int) capacity);
         }
 
         public override JsValue Get(ulong index) => index < (ulong) _target.Length ? ReadValue((int) index) : JsValue.Undefined;
@@ -629,7 +631,7 @@ internal abstract class ArrayOperations : IEnumerable<JsValue>
 
         public override void Set(ulong index, JsValue value, bool updateLength = false, bool throwOnError = true)
         {
-            _target.SetAt((int)index, value);
+            _target.SetAt((int) index, value);
         }
 
         public override void DeletePropertyOrThrow(ulong index)

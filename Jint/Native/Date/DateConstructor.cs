@@ -1,6 +1,5 @@
 #pragma warning disable CA1859 // Use concrete types when possible for improved performance -- most of constructor methods return JsValue
 
-using Jint.Collections;
 using Jint.Native.Function;
 using Jint.Native.Object;
 using Jint.Runtime;
@@ -51,7 +50,7 @@ internal sealed class DateConstructor : Constructor
     /// <summary>
     /// https://tc39.es/ecma262/#sec-date.parse
     /// </summary>
-    private JsValue Parse(JsValue thisObject, JsValue[] arguments)
+    private JsValue Parse(JsValue thisObject, JsCallArguments arguments)
     {
         var dateString = TypeConverter.ToString(arguments.At(0));
         var date = ParseFromString(dateString);
@@ -75,7 +74,7 @@ internal sealed class DateConstructor : Constructor
     /// <summary>
     /// https://tc39.es/ecma262/#sec-date.utc
     /// </summary>
-    private static JsValue Utc(JsValue thisObject, JsValue[] arguments)
+    private static JsValue Utc(JsValue thisObject, JsCallArguments arguments)
     {
         var y = TypeConverter.ToNumber(arguments.At(0));
         var m = TypeConverter.ToNumber(arguments.At(1, JsNumber.PositiveZero));
@@ -88,7 +87,7 @@ internal sealed class DateConstructor : Constructor
         var yInteger = TypeConverter.ToInteger(y);
         if (!double.IsNaN(y) && 0 <= yInteger && yInteger <= 99)
         {
-            y  = yInteger + 1900;
+            y = yInteger + 1900;
         }
 
         var finalDate = DatePrototype.MakeDate(
@@ -98,12 +97,12 @@ internal sealed class DateConstructor : Constructor
         return finalDate.TimeClip().ToJsValue();
     }
 
-    private JsValue Now(JsValue thisObject, JsValue[] arguments)
+    private JsValue Now(JsValue thisObject, JsCallArguments arguments)
     {
         return (long) (_timeSystem.GetUtcNow().DateTime - Epoch).TotalMilliseconds;
     }
 
-    protected internal override JsValue Call(JsValue thisObject, JsValue[] arguments)
+    protected internal override JsValue Call(JsValue thisObject, JsCallArguments arguments)
     {
         return PrototypeObject.ToString(Construct(Arguments.Empty, thisObject), Arguments.Empty);
     }
@@ -111,7 +110,7 @@ internal sealed class DateConstructor : Constructor
     /// <summary>
     /// https://tc39.es/ecma262/#sec-date
     /// </summary>
-    public override ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
+    public override ObjectInstance Construct(JsCallArguments arguments, JsValue newTarget)
     {
         // fast path is building default, new Date()
         if (arguments.Length == 0 || newTarget.IsUndefined())
@@ -126,7 +125,7 @@ internal sealed class DateConstructor : Constructor
         return ConstructUnlikely(arguments, newTarget);
     }
 
-    private JsDate ConstructUnlikely(JsValue[] arguments, JsValue newTarget)
+    private JsDate ConstructUnlikely(JsCallArguments arguments, JsValue newTarget)
     {
         DatePresentation dv;
         if (arguments.Length == 1)

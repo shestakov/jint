@@ -16,19 +16,29 @@ internal sealed class ObjectTraverseStack
         _engine = engine;
     }
 
-    public void Enter(JsValue value)
+    public bool TryEnter(JsValue value)
     {
         if (value is null)
         {
-            ExceptionHelper.ThrowArgumentNullException(nameof(value));
+            Throw.ArgumentNullException(nameof(value));
         }
 
         if (_stack.Contains(value))
         {
-            ExceptionHelper.ThrowTypeError(_engine.Realm, "Cyclic reference detected.");
+            return false;
         }
 
         _stack.Push(value);
+
+        return true;
+    }
+
+    public void Enter(JsValue value)
+    {
+        if (!TryEnter(value))
+        {
+            Throw.TypeError(_engine.Realm, "Cyclic reference detected.");
+        }
     }
 
     public void Exit()

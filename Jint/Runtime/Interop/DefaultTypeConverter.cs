@@ -4,11 +4,10 @@ using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using Jint.Extensions;
 using Jint.Native;
 using Jint.Native.Function;
-using Jint.Native.Object;
-using Jint.Runtime.Descriptors;
 using Expression = System.Linq.Expressions.Expression;
 
 #pragma warning disable IL2026
@@ -26,15 +25,24 @@ public class DefaultTypeConverter : ITypeConverter
     private readonly record struct TypeConversionKey(Type Source, Type Target);
 
     private static readonly ConcurrentDictionary<TypeConversionKey, MethodInfo?> _knownCastOperators = new();
+    private static readonly ConcurrentDictionary<TypeConversionKey, MethodInfo?> _knownFromResultGenerics = new();
 
     private static readonly Type intType = typeof(int);
-    private static readonly Type iCallableType = typeof(Func<JsValue, JsValue[], JsValue>);
+    private static readonly Type iCallableType = typeof(JsCallDelegate);
     private static readonly Type jsValueType = typeof(JsValue);
     private static readonly Type objectType = typeof(object);
     private static readonly Type engineType = typeof(Engine);
-    private static readonly Type typeType = typeof(Type);
+    private static readonly Type taskType = typeof(Task);
+    private static readonly Type genTaskType = typeof(Task<>);
+    private static readonly MethodInfo taskFromResultInfo = taskType.GetMethod("FromResult")!;
+#if NETSTANDARD2_1_OR_GREATER || NETCOREAPP
+    private static readonly Type valueTaskType = typeof(ValueTask);
+    private static readonly Type genValueTaskType = typeof(ValueTask<>);
+    private static readonly MethodInfo valueTaskFromResultInfo = valueTaskType.GetMethod("FromResult")!;
+#endif
 
-    private static readonly MethodInfo convertChangeType = typeof(Convert).GetMethod("ChangeType", new[] { objectType, typeType, typeof(IFormatProvider) })!;
+    private static readonly MethodInfo changeTypeIfConvertible = typeof(DefaultTypeConverter).GetMethod(
+        nameof(ChangeTypeOnlyIfConvertible), BindingFlags.NonPublic | BindingFlags.Static)!;
     private static readonly MethodInfo jsValueFromObject = jsValueType.GetMethod(nameof(JsValue.FromObject))!;
     private static readonly MethodInfo jsValueToObject = jsValueType.GetMethod(nameof(JsValue.ToObject))!;
 
@@ -51,7 +59,7 @@ public class DefaultTypeConverter : ITypeConverter
     {
         if (!TryConvert(value, type, formatProvider, propagateException: true, out var converted, out var problemMessage))
         {
-            ExceptionHelper.ThrowError(_engine, problemMessage ?? $"Unable to convert {value} to type {type}");
+            Throw.Error(_engine, problemMessage ?? $"Unable to convert {value} to type {type}");
         }
         return converted;
     }
@@ -64,6 +72,9 @@ public class DefaultTypeConverter : ITypeConverter
     {
         return TryConvert(value, type, formatProvider, propagateException: false, out converted, out _);
     }
+
+    private static readonly ConditionalWeakTable<IFunction, Func<object, Delegate>> _targetBinderDelegateCache = new();
+    private static readonly ConditionalWeakTable<object, Delegate> _boundTargetDelegateCache = new();
 
     private bool TryConvert(
         object? value,
@@ -111,14 +122,10 @@ public class DefaultTypeConverter : ITypeConverter
 
         if (type.IsEnum)
         {
-            var integer = System.Convert.ChangeType(value, intType, formatProvider);
-            if (integer == null)
+            if (EnumTryParse(type, value.ToString(), out converted))
             {
-                ExceptionHelper.ThrowArgumentOutOfRangeException();
+                return true;
             }
-
-            converted = Enum.ToObject(type, integer);
-            return true;
         }
 
         var valueType = value.GetType();
@@ -128,19 +135,24 @@ public class DefaultTypeConverter : ITypeConverter
         {
             if (typeof(Delegate).IsAssignableFrom(type) && !type.IsAbstract)
             {
-                // use target function instance as cache holder, this way delegate and target hold same lifetime
-                var delegatePropertyKey = "__jint_delegate_" + type.GUID;
+                var func = (JsCallDelegate) value;
+                var functionInstance = func.Target;
 
-                var func = (Func<JsValue, JsValue[], JsValue>) value;
-                var functionInstance = func.Target as Function;
+                // caching of .NET delegates per function instance is required to be able to support
+                // unregistering event handlers (see ShouldExecuteActionCallbackOnEventChanged)
+                var d = functionInstance is not null ?
+                    _boundTargetDelegateCache.GetValue(functionInstance!, target =>
+                    {
+                        var astFunction = (functionInstance as Function)?._functionDefinition?.Function;
 
-                var d = functionInstance?.GetHiddenClrObjectProperty(delegatePropertyKey) as Delegate;
+                        // use a single builder per unique function AST
+                        var targetBinder = astFunction is not null
+                            ? _targetBinderDelegateCache.GetValue(astFunction, _ => BuildTargetBinderDelegate(type, func))
+                            : BuildTargetBinderDelegate(type, func);
 
-                if (d is null)
-                {
-                    d = BuildDelegate(type, func);
-                    functionInstance?.SetHiddenClrObjectProperty(delegatePropertyKey, d);
-                }
+                        return targetBinder(target)!;
+                    }) :
+                    BuildDelegate(type, func, Expression.Constant(functionInstance, functionInstance!.GetType())).Compile();
 
                 converted = d;
                 return true;
@@ -149,8 +161,7 @@ public class DefaultTypeConverter : ITypeConverter
 
         if (type.IsArray)
         {
-            var source = value as object[];
-            if (source == null)
+            if (value is not object[] source)
             {
                 problemMessage = $"Value of object[] type is expected, but actual type is {value.GetType()}";
                 return false;
@@ -201,7 +212,7 @@ public class DefaultTypeConverter : ITypeConverter
                     foreach (var constructor in constructors)
                     {
                         var parameterInfos = constructor.GetParameters();
-                        if (parameterInfos.All(static p => p.IsOptional) && constructor.IsPublic)
+                        if (Array.TrueForAll(parameterInfos, static p => p.IsOptional) && constructor.IsPublic)
                         {
                             constructorParameters = new object[parameterInfos.Length];
                             found = true;
@@ -265,9 +276,55 @@ public class DefaultTypeConverter : ITypeConverter
         }
     }
 
-    private Delegate BuildDelegate(
+    private static bool EnumTryParse(Type enumType, string? value, [NotNullWhen(true)] out object? result)
+    {
+        if (value is null)
+        {
+            result = null;
+            return false;
+        }
+
+#if NETSTANDARD2_1_OR_GREATER || NETCOREAPP
+        return Enum.TryParse(enumType, value, ignoreCase: false, out result!);
+#else
+        try
+        {
+            result = Enum.Parse(enumType, value, ignoreCase: false);
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            result = null!;
+            return false;
+        }
+#endif
+    }
+
+    private Func<object, Delegate> BuildTargetBinderDelegate(
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicMethods)] Type delegateType,
+        JsCallDelegate function)
+    {
+        // Parameter for the target object
+        var targetParam = Expression.Parameter(typeof(object), "target");
+
+        var castedTarget = Expression.Convert(targetParam, function.Target!.GetType());
+
+        var innerDelegate = BuildDelegate(delegateType, function, castedTarget);
+
+        // Create the outer delegate: Func<object, Delegate>
+        var outerDelegateType = typeof(Func<object, Delegate>);
+        var curried = Expression.Lambda(
+            outerDelegateType,
+            innerDelegate,
+            targetParam);
+
+        return (Func<object, Delegate>) curried.Compile();
+    }
+
+    private LambdaExpression BuildDelegate(
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicMethods)] Type type,
-        Func<JsValue, JsValue[], JsValue> function)
+        JsCallDelegate function,
+        Expression targetExpression)
     {
         var method = type.GetMethod("Invoke");
         var arguments = method!.GetParameters();
@@ -311,7 +368,7 @@ public class DefaultTypeConverter : ITypeConverter
         var vars = Expression.NewArrayInit(jsValueType, initializers);
 
         var callExpression = Expression.Call(
-            Expression.Constant(function.Target),
+            targetExpression,
             function.Method,
             Expression.Constant(JsValue.Undefined, jsValueType),
             vars);
@@ -323,20 +380,75 @@ public class DefaultTypeConverter : ITypeConverter
                 Expression.Convert(
                     Expression.Call(
                         null,
-                        convertChangeType,
+                        changeTypeIfConvertible,
                         Expression.Call(callExpression, jsValueToObject),
                         Expression.Constant(method.ReturnType),
                         Expression.Constant(System.Globalization.CultureInfo.InvariantCulture, typeof(IFormatProvider))
                     ),
                     method.ReturnType
                 ),
-                new ReadOnlyCollection<ParameterExpression>(parameters)).Compile();
+                new ReadOnlyCollection<ParameterExpression>(parameters));
         }
 
         return Expression.Lambda(
             type,
             callExpression,
-            new ReadOnlyCollection<ParameterExpression>(parameters)).Compile();
+            new ReadOnlyCollection<ParameterExpression>(parameters));
+    }
+
+    [return: NotNullIfNotNull(nameof(value))]
+    private static object? ChangeTypeOnlyIfConvertible(object? value, Type conversionType, IFormatProvider? provider)
+    {
+        if (conversionType == taskType)
+        {
+            return Task.CompletedTask;
+        }
+
+#if NETSTANDARD2_1_OR_GREATER || NETCOREAPP
+        if (conversionType == valueTaskType)
+        {
+            return default(ValueTask);
+        }
+#endif
+
+        if (conversionType.IsGenericType && conversionType.GetGenericTypeDefinition() == genTaskType)
+        {
+            var key = new TypeConversionKey(conversionType.GetGenericArguments()[0], genTaskType);
+            var fromResultMethod = _knownFromResultGenerics.GetOrAdd(key, GetFromResultMethod);
+            if (fromResultMethod != null)
+            {
+                return fromResultMethod.Invoke(null, [value]);
+            }
+        }
+
+#if NETCOREAPP
+        if (conversionType.IsGenericType && conversionType.GetGenericTypeDefinition() == genValueTaskType)
+        {
+            var key = new TypeConversionKey(conversionType.GetGenericArguments()[0], genValueTaskType);
+            var fromResultMethod = _knownFromResultGenerics.GetOrAdd(key, GetFromResultMethod);
+            if (fromResultMethod != null)
+            {
+                return fromResultMethod.Invoke(null, [value]);
+            }
+        }
+#endif
+
+        if (value == null || value is IConvertible)
+            return System.Convert.ChangeType(value, conversionType, provider);
+
+        return value;
+    }
+
+    private static MethodInfo? GetFromResultMethod(TypeConversionKey key)
+    {
+        var (target, taskType) = key;
+#if NETCOREAPP
+        if (taskType == genValueTaskType)
+        {
+            return valueTaskFromResultInfo.MakeGenericMethod(target);
+        }
+#endif
+        return taskFromResultInfo.MakeGenericMethod(target);
     }
 
     private static bool TryCastWithOperators(object value, Type type, Type valueType, [NotNullWhen(true)] out object? converted)
@@ -372,7 +484,7 @@ public class DefaultTypeConverter : ITypeConverter
         {
             try
             {
-                converted = castOperator.Invoke(null, new[] { value });
+                converted = castOperator.Invoke(null, [value]);
                 return converted is not null;
             }
             catch
@@ -386,17 +498,4 @@ public class DefaultTypeConverter : ITypeConverter
         return false;
     }
 
-}
-
-internal static class ObjectExtensions
-{
-    public static object? GetHiddenClrObjectProperty(this ObjectInstance obj, string name)
-    {
-        return (obj.Get(name) as IObjectWrapper)?.Target;
-    }
-
-    public static void SetHiddenClrObjectProperty(this ObjectInstance obj, string name, object value)
-    {
-        obj.SetOwnProperty(name, new PropertyDescriptor(ObjectWrapper.Create(obj.Engine, value), PropertyFlag.AllForbidden));
-    }
 }

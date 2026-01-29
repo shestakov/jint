@@ -1,4 +1,3 @@
-using Jint.Collections;
 using Jint.Native.Iterator;
 using Jint.Native.Object;
 using Jint.Native.Symbol;
@@ -67,7 +66,7 @@ internal sealed class MapIteratorPrototype : IteratorPrototype
 
     private sealed class MapIterator : IteratorInstance
     {
-        private readonly OrderedDictionary<JsValue, JsValue> _map;
+        private readonly JintOrderedDictionary<JsValue, JsValue> _map;
 
         private int _position;
 

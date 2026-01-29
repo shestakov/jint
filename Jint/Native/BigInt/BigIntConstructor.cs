@@ -1,5 +1,4 @@
 using System.Numerics;
-using Jint.Collections;
 using Jint.Native.Function;
 using Jint.Native.Object;
 using Jint.Runtime;
@@ -41,7 +40,7 @@ internal sealed class BigIntConstructor : Constructor
     /// <summary>
     /// https://tc39.es/ecma262/#sec-bigint.asintn
     /// </summary>
-    private JsValue AsIntN(JsValue thisObject, JsValue[] arguments)
+    private JsValue AsIntN(JsValue thisObject, JsCallArguments arguments)
     {
         var bits = (int) TypeConverter.ToIndex(_realm, arguments.At(0));
         var bigint = arguments.At(1).ToBigInteger(_engine);
@@ -58,7 +57,7 @@ internal sealed class BigIntConstructor : Constructor
     /// <summary>
     /// https://tc39.es/ecma262/#sec-bigint.asuintn
     /// </summary>
-    private JsValue AsUintN(JsValue thisObject, JsValue[] arguments)
+    private JsValue AsUintN(JsValue thisObject, JsCallArguments arguments)
     {
         var bits = (int) TypeConverter.ToIndex(_realm, arguments.At(0));
         var bigint = arguments.At(1).ToBigInteger(_engine);
@@ -68,7 +67,7 @@ internal sealed class BigIntConstructor : Constructor
         return result;
     }
 
-    protected internal override JsValue Call(JsValue thisObject, JsValue[] arguments)
+    protected internal override JsValue Call(JsValue thisObject, JsCallArguments arguments)
     {
         if (arguments.Length == 0)
         {
@@ -94,14 +93,14 @@ internal sealed class BigIntConstructor : Constructor
             return JsBigInt.Create((long) value._value);
         }
 
-        ExceptionHelper.ThrowRangeError(_realm, "The number " + value + " cannot be converted to a BigInt because it is not an integer");
+        Throw.RangeError(_realm, "The number " + value + " cannot be converted to a BigInt because it is not an integer");
         return null;
     }
 
     /// <summary>
     /// https://tc39.es/ecma262/#sec-bigint-constructor-number-value
     /// </summary>
-    public override ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
+    public override ObjectInstance Construct(JsCallArguments arguments, JsValue newTarget)
     {
         var value = arguments.Length > 0
             ? JsBigInt.Create(arguments[0].ToBigInteger(_engine))

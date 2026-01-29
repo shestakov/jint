@@ -15,7 +15,7 @@ internal abstract class IteratorInstance : ObjectInstance
 
     public override object ToObject()
     {
-        ExceptionHelper.ThrowNotImplementedException();
+        Throw.NotImplementedException();
         return null;
     }
 
@@ -24,6 +24,13 @@ internal abstract class IteratorInstance : ObjectInstance
     public virtual void Close(CompletionType completion)
     {
     }
+
+    /// <summary>
+    /// Gets the underlying iterator object instance.
+    /// For object iterators, this is the wrapped object. For built-in iterators, this is self.
+    /// Used by yield* to call methods like "return" and "throw" on the iterator.
+    /// </summary>
+    public virtual ObjectInstance Instance => this;
 
     /// <summary>
     /// https://tc39.es/ecma262/#sec-createiterresultobject
@@ -36,18 +43,19 @@ internal abstract class IteratorInstance : ObjectInstance
     internal sealed class ObjectIterator : IteratorInstance
     {
         private readonly ObjectInstance _target;
-        private readonly ICallable _nextMethod;
+        private readonly ICallable? _nextMethod;
+
+        public override ObjectInstance Instance => _target;
 
         public ObjectIterator(ObjectInstance target) : base(target.Engine)
         {
             _target = target;
-            if (target.Get(CommonProperties.Next) is not ICallable callable)
+            // Don't check for 'next' method here - it's only required when actually iterating
+            // This allows iterators with only 'return' method to be created (e.g., for closing)
+            if (target.Get(CommonProperties.Next) is ICallable callable)
             {
-                ExceptionHelper.ThrowTypeError(target.Engine.Realm);
-                return;
+                _nextMethod = callable;
             }
-
-            _nextMethod = callable;
         }
 
         public override bool TryIteratorStep(out ObjectInstance result)
@@ -65,11 +73,18 @@ internal abstract class IteratorInstance : ObjectInstance
 
         private ObjectInstance IteratorNext()
         {
+            // Check for 'next' method when actually trying to iterate
+            if (_nextMethod is null)
+            {
+                Throw.TypeError(_target.Engine.Realm, "Iterator does not have a next method");
+                return null!;
+            }
+
             var jsValue = _nextMethod.Call(_target, Arguments.Empty);
             var instance = jsValue as ObjectInstance;
             if (instance is null)
             {
-                ExceptionHelper.ThrowTypeError(_target.Engine.Realm, $"Iterator result {jsValue} is not an object");
+                Throw.TypeError(_target.Engine.Realm, $"Iterator result {jsValue} is not an object");
             }
 
             return instance;
@@ -77,34 +92,25 @@ internal abstract class IteratorInstance : ObjectInstance
 
         public override void Close(CompletionType completion)
         {
-            if (!_target.TryGetValue(CommonProperties.Return, out var func)
-                || func.IsNullOrUndefined())
+            var callable = _target.GetMethod(CommonProperties.Return);
+            if (callable is null)
             {
                 return;
             }
 
-            var callable = func as ICallable;
-            if (callable is null)
-            {
-                ExceptionHelper.ThrowTypeError(_target.Engine.Realm, func + " is not a function");
-            }
-
-            var innerResult = Undefined;
+            JsValue innerResult;
             try
             {
                 innerResult = callable.Call(_target, Arguments.Empty);
             }
-            catch
+            catch (JavaScriptException) when (completion == CompletionType.Throw)
             {
-                if (completion != CompletionType.Throw)
-                {
-                    throw;
-                }
+                return;
             }
 
             if (completion != CompletionType.Throw && !innerResult.IsObject())
             {
-                ExceptionHelper.ThrowTypeError(_target.Engine.Realm, "Iterator returned non-object");
+                Throw.TypeError(_target.Engine.Realm, "Iterator returned non-object");
             }
         }
     }
@@ -145,7 +151,7 @@ internal abstract class IteratorInstance : ObjectInstance
             var r = iteratingRegExp as JsRegExp;
             if (r is null)
             {
-                ExceptionHelper.ThrowTypeError(engine.Realm);
+                Throw.TypeError(engine.Realm);
             }
 
             _iteratingRegExp = r;

@@ -497,4 +497,126 @@ return Promise.all(promiseArray);") // Returning and array through Promise.any()
 
         Assert.Equal("at <anonymous>:1:56", logMessage?.Trim());
     }
+
+    [Fact]
+    public void WithResolvers_calling_resolve_resolves_promise()
+    {
+        // Arrange
+        using var engine = new Engine();
+        List<string> logMessages = [];
+        engine.SetValue("log", logMessages.Add);
+
+        // Act
+        engine.Execute("""
+                       const p = Promise.withResolvers();
+                       const next = p.promise
+                           .then(() => log('resolved'))
+                           .catch(() => log('rejected'));
+                           
+                       log('start');
+                       p.resolve();
+                       log('end');
+                       """);
+        engine.RunAvailableContinuations();
+
+        // Assert
+        List<string> expected = ["start", "end", "resolved"];
+        Assert.Equal(expected, logMessages);
+    }
+
+    [Fact]
+    public void WithResolvers_calling_reject_rejects_promise()
+    {
+        // Arrange
+        using var engine = new Engine();
+        List<string> logMessages = [];
+        engine.SetValue("log", logMessages.Add);
+
+        // Act
+        engine.Execute("""
+                       const p = Promise.withResolvers();
+                       const next = p.promise
+                           .then(() => log('resolved'))
+                           .catch(() => log('rejected'));
+
+                       log('start');
+                       p.reject();
+                       log('end');
+                       """);
+        engine.RunAvailableContinuations();
+
+        // Assert
+        List<string> expected = ["start", "end", "rejected"];
+        Assert.Equal(expected, logMessages);
+    }
+
+    [Fact]
+    public void UnwrapIfPromise_WithCancellationToken_ResolvesCorrectly()
+    {
+        Action<JsValue> resolveFunc = null!;
+
+        var engine = new Engine();
+        engine.SetValue("f", new Func<JsValue>(() =>
+        {
+            var (promise, resolve, _) = engine.RegisterPromise();
+            resolveFunc = resolve;
+            return promise;
+        }));
+
+        var promise = engine.Evaluate("f();");
+
+        using var cts = new CancellationTokenSource();
+        resolveFunc(42);
+        Assert.Equal(42, promise.UnwrapIfPromise(cts.Token));
+    }
+
+    [Fact]
+    public void UnwrapIfPromise_WithCancellationToken_ThrowsOperationCanceledException()
+    {
+        var engine = new Engine();
+        engine.SetValue("f", new Func<JsValue>(() =>
+        {
+            var (promise, _, _) = engine.RegisterPromise();
+            return promise;
+        }));
+
+        var promise = engine.Evaluate("f();");
+
+        using var cts = new CancellationTokenSource();
+        cts.CancelAfter(TimeSpan.FromMilliseconds(50));
+
+        Assert.Throws<OperationCanceledException>(() => promise.UnwrapIfPromise(cts.Token));
+    }
+
+    [Fact]
+    public void UnwrapIfPromise_WithCancellationToken_NonPromiseReturnsValue()
+    {
+        var engine = new Engine();
+        var result = engine.Evaluate("42");
+
+        using var cts = new CancellationTokenSource();
+        Assert.Equal(42, result.UnwrapIfPromise(cts.Token));
+    }
+
+    [Fact]
+    public void UnwrapIfPromise_WithCancellationToken_RejectsCorrectly()
+    {
+        Action<JsValue> rejectFunc = null!;
+
+        var engine = new Engine();
+        engine.SetValue("f", new Func<JsValue>(() =>
+        {
+            var (promise, _, reject) = engine.RegisterPromise();
+            rejectFunc = reject;
+            return promise;
+        }));
+
+        var promise = engine.Evaluate("f();");
+
+        using var cts = new CancellationTokenSource();
+        rejectFunc("error!");
+
+        var ex = Assert.Throws<PromiseRejectedException>(() => promise.UnwrapIfPromise(cts.Token));
+        Assert.Equal("error!", ex.RejectedValue.AsString());
+    }
 }

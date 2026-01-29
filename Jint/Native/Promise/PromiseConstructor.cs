@@ -1,4 +1,3 @@
-using Jint.Collections;
 using Jint.Native.Function;
 using Jint.Native.Iterator;
 using Jint.Native.Object;
@@ -13,9 +12,8 @@ internal sealed record PromiseCapability(
     JsValue PromiseInstance,
     ICallable Resolve,
     ICallable Reject,
-    JsValue RejectObj,
-    JsValue ResolveObj
-);
+    JsValue ResolveObj,
+    JsValue RejectObj);
 
 internal sealed class PromiseConstructor : Constructor
 {
@@ -49,7 +47,7 @@ internal sealed class PromiseConstructor : Constructor
             ["reject"] = new(new PropertyDescriptor(new ClrFunction(Engine, "reject", Reject, 1, LengthFlags), PropertyFlags)),
             ["resolve"] = new(new PropertyDescriptor(new ClrFunction(Engine, "resolve", Resolve, 1, LengthFlags), PropertyFlags)),
             ["try"] = new(new PropertyDescriptor(new ClrFunction(Engine, "try", Try, 1, LengthFlags), PropertyFlags)),
-            ["withResolvers"] = new(new PropertyDescriptor(new ClrFunction(Engine, "withResolvers", WithResolvers , 0, LengthFlags), PropertyFlags)),
+            ["withResolvers"] = new(new PropertyDescriptor(new ClrFunction(Engine, "withResolvers", WithResolvers, 0, LengthFlags), PropertyFlags)),
         };
         SetProperties(properties);
 
@@ -65,16 +63,16 @@ internal sealed class PromiseConstructor : Constructor
     /// <summary>
     /// https://tc39.es/ecma262/#sec-promise-executor
     /// </summary>
-    public override ObjectInstance Construct(JsValue[] arguments, JsValue newTarget)
+    public override ObjectInstance Construct(JsCallArguments arguments, JsValue newTarget)
     {
         if (newTarget.IsUndefined())
         {
-            ExceptionHelper.ThrowTypeError(_realm, "Constructor Promise requires 'new'");
+            Throw.TypeError(_realm, "Constructor Promise requires 'new'");
         }
 
         if (arguments.At(0) is not ICallable executor)
         {
-            ExceptionHelper.ThrowTypeError(_realm, $"Promise executor {(arguments.At(0))} is not a function");
+            Throw.TypeError(_realm, $"Promise executor {(arguments.At(0))} is not a function");
             return null;
         }
 
@@ -86,11 +84,11 @@ internal sealed class PromiseConstructor : Constructor
         var (resolve, reject) = promise.CreateResolvingFunctions();
         try
         {
-            executor.Call(Undefined, new JsValue[] { resolve, reject });
+            executor.Call(Undefined, resolve, reject);
         }
         catch (JavaScriptException e)
         {
-            reject.Call(JsValue.Undefined, new[] { e.Error });
+            reject.Call(JsValue.Undefined, [e.Error]);
         }
 
         return promise;
@@ -99,23 +97,23 @@ internal sealed class PromiseConstructor : Constructor
     /// <summary>
     /// https://tc39.es/ecma262/#sec-promise.resolve
     /// </summary>
-    internal JsValue Resolve(JsValue thisObject, JsValue[] arguments)
+    internal JsValue Resolve(JsValue thisObject, JsCallArguments arguments)
     {
         if (!thisObject.IsObject())
         {
-            ExceptionHelper.ThrowTypeError(_realm, "PromiseResolve called on non-object");
+            Throw.TypeError(_realm, "PromiseResolve called on non-object");
         }
 
         if (thisObject is not IConstructor)
         {
-            ExceptionHelper.ThrowTypeError(_realm, "Promise.resolve invoked on a non-constructor value");
+            Throw.TypeError(_realm, "Promise.resolve invoked on a non-constructor value");
         }
 
         var x = arguments.At(0);
         return PromiseResolve(thisObject, x);
     }
 
-    private JsObject WithResolvers(JsValue thisObject, JsValue[] arguments)
+    private JsObject WithResolvers(JsValue thisObject, JsCallArguments arguments)
     {
         var promiseCapability = NewPromiseCapability(_engine, thisObject);
         var obj = OrdinaryObjectCreate(_engine, _engine.Realm.Intrinsics.Object.PrototypeObject);
@@ -124,6 +122,8 @@ internal sealed class PromiseConstructor : Constructor
         obj.CreateDataPropertyOrThrow("reject", promiseCapability.RejectObj);
         return obj;
     }
+
+    internal JsValue PromiseResolve(JsValue x) => PromiseResolve(this, x);
 
     /// <summary>
     /// https://tc39.es/ecma262/#sec-promise-resolve
@@ -139,45 +139,45 @@ internal sealed class PromiseConstructor : Constructor
             }
         }
 
-        var (instance, resolve, _, _, _) = NewPromiseCapability(_engine, thisObject);
+        var capability = NewPromiseCapability(_engine, thisObject);
 
-        resolve.Call(Undefined, new[] { x });
+        capability.Resolve.Call(Undefined, x);
 
-        return instance;
+        return capability.PromiseInstance;
     }
 
     /// <summary>
     /// https://tc39.es/ecma262/#sec-promise.reject
     /// </summary>
-    private JsValue Reject(JsValue thisObject, JsValue[] arguments)
+    private JsValue Reject(JsValue thisObject, JsCallArguments arguments)
     {
         if (!thisObject.IsObject())
         {
-            ExceptionHelper.ThrowTypeError(_realm, "Promise.reject called on non-object");
+            Throw.TypeError(_realm, "Promise.reject called on non-object");
         }
 
         if (thisObject is not IConstructor)
         {
-            ExceptionHelper.ThrowTypeError(_realm, "Promise.reject invoked on a non-constructor value");
+            Throw.TypeError(_realm, "Promise.reject invoked on a non-constructor value");
         }
 
         var r = arguments.At(0);
 
-        var (instance, _, reject, _, _) = NewPromiseCapability(_engine, thisObject);
+        var capability = NewPromiseCapability(_engine, thisObject);
 
-        reject.Call(Undefined, new[] { r });
+        capability.Reject.Call(Undefined, r);
 
-        return instance;
+        return capability.PromiseInstance;
     }
 
     /// <summary>
     /// https://tc39.es/proposal-promise-try/
     /// </summary>
-    private JsValue Try(JsValue thisObject, JsValue[] arguments)
+    private JsValue Try(JsValue thisObject, JsCallArguments arguments)
     {
         if (!thisObject.IsObject())
         {
-            ExceptionHelper.ThrowTypeError(_realm, "Promise.try called on non-object");
+            Throw.TypeError(_realm, "Promise.try called on non-object");
         }
 
         var callbackfn = arguments.At(0);
@@ -185,12 +185,12 @@ internal sealed class PromiseConstructor : Constructor
 
         try
         {
-            var status = callbackfn.Call(Undefined, arguments.Skip(1));
-            promiseCapability.Resolve.Call(Undefined, new[] { status });
+            var status = callbackfn.Call(Undefined, arguments.AsSpan().Slice(1).ToArray());
+            promiseCapability.Resolve.Call(Undefined, status);
         }
         catch (JavaScriptException e)
         {
-            promiseCapability.Reject.Call(Undefined, new[] { e.Error });
+            promiseCapability.Reject.Call(Undefined, e.Error);
         }
 
         return promiseCapability.PromiseInstance;
@@ -199,11 +199,11 @@ internal sealed class PromiseConstructor : Constructor
     // This helper methods executes the first 6 steps in the specs belonging to static Promise methods like all, any etc.
     // If it returns false, that means it has an error and it is already rejected
     // If it returns true, the logic specific to the calling function should continue executing
-    private bool TryGetPromiseCapabilityAndIterator(JsValue thisObject, JsValue[] arguments, string callerName, out PromiseCapability capability, out ICallable promiseResolve, out IteratorInstance iterator)
+    private bool TryGetPromiseCapabilityAndIterator(JsValue thisObject, JsCallArguments arguments, string callerName, out PromiseCapability capability, out ICallable promiseResolve, out IteratorInstance iterator)
     {
         if (!thisObject.IsObject())
         {
-            ExceptionHelper.ThrowTypeError(_realm, $"{callerName} called on non-object");
+            Throw.TypeError(_realm, $"{callerName} called on non-object");
         }
 
         //2. Let promiseCapability be ? NewPromiseCapability(C).
@@ -218,7 +218,7 @@ internal sealed class PromiseConstructor : Constructor
         }
         catch (JavaScriptException e)
         {
-            reject.Call(Undefined, new[] { e.Error });
+            reject.Call(Undefined, e.Error);
             promiseResolve = null!;
             iterator = null!;
             return false;
@@ -232,7 +232,7 @@ internal sealed class PromiseConstructor : Constructor
         {
             if (arguments.Length == 0)
             {
-                ExceptionHelper.ThrowTypeError(_realm, $"no arguments were passed to {callerName}");
+                Throw.TypeError(_realm, $"no arguments were passed to {callerName}");
             }
 
             var iterable = arguments.At(0);
@@ -241,7 +241,7 @@ internal sealed class PromiseConstructor : Constructor
         }
         catch (JavaScriptException e)
         {
-            reject.Call(Undefined, new[] { e.Error });
+            reject.Call(Undefined, e.Error);
             iterator = null!;
             return false;
         }
@@ -250,12 +250,10 @@ internal sealed class PromiseConstructor : Constructor
     }
 
     // https://tc39.es/ecma262/#sec-promise.all
-    private JsValue All(JsValue thisObject, JsValue[] arguments)
+    private JsValue All(JsValue thisObject, JsCallArguments arguments)
     {
         if (!TryGetPromiseCapabilityAndIterator(thisObject, arguments, "Promise.all", out var capability, out var promiseResolve, out var iterator))
             return capability.PromiseInstance;
-
-        var (resultingPromise, resolve, reject, _, rejectObj) = capability;
 
         var results = new List<JsValue>();
         bool doneIterating = false;
@@ -269,7 +267,7 @@ internal sealed class PromiseConstructor : Constructor
             if (results.TrueForAll(static x => x is not null) && doneIterating)
             {
                 var array = _realm.Intrinsics.Array.ConstructFast(results);
-                resolve.Call(Undefined, new JsValue[] { array });
+                capability.Resolve.Call(Undefined, array);
             }
         }
 
@@ -296,8 +294,8 @@ internal sealed class PromiseConstructor : Constructor
                 }
                 catch (JavaScriptException e)
                 {
-                    reject.Call(Undefined, new[] { e.Error });
-                    return resultingPromise;
+                    capability.Reject.Call(Undefined, e.Error);
+                    return capability.PromiseInstance;
                 }
 
                 // note that null here is important
@@ -305,7 +303,7 @@ internal sealed class PromiseConstructor : Constructor
                 // In F# it would be Option<JsValue>
                 results.Add(null!);
 
-                var item = promiseResolve.Call(thisObject, new JsValue[] { value });
+                var item = promiseResolve.Call(thisObject, value);
                 var thenProps = item.Get("then");
                 if (thenProps is ICallable thenFunc)
                 {
@@ -325,11 +323,11 @@ internal sealed class PromiseConstructor : Constructor
                             return Undefined;
                         }, 1, PropertyFlag.Configurable);
 
-                    thenFunc.Call(item, new JsValue[] { onSuccess, rejectObj });
+                    thenFunc.Call(item, onSuccess, capability.RejectObj);
                 }
                 else
                 {
-                    ExceptionHelper.ThrowTypeError(_realm, "Passed non Promise-like value");
+                    Throw.TypeError(_realm, "Passed non Promise-like value");
                 }
 
                 index += 1;
@@ -337,21 +335,26 @@ internal sealed class PromiseConstructor : Constructor
         }
         catch (JavaScriptException e)
         {
-            iterator.Close(CompletionType.Throw);
-            reject.Call(Undefined, new[] { e.Error });
-            return resultingPromise;
+            try
+            {
+                iterator.Close(CompletionType.Throw);
+            }
+            catch (JavaScriptException)
+            {
+                // ignore any errors from closing the iterator
+            }
+            capability.Reject.Call(Undefined, e.Error);
+            return capability.PromiseInstance;
         }
 
-        return resultingPromise;
+        return capability.PromiseInstance;
     }
 
     // https://tc39.es/ecma262/#sec-promise.allsettled
-    private JsValue AllSettled(JsValue thisObject, JsValue[] arguments)
+    private JsValue AllSettled(JsValue thisObject, JsCallArguments arguments)
     {
         if (!TryGetPromiseCapabilityAndIterator(thisObject, arguments, "Promise.allSettled", out var capability, out var promiseResolve, out var iterator))
             return capability.PromiseInstance;
-
-        var (resultingPromise, resolve, reject, _, rejectObj) = capability;
 
         var results = new List<JsValue>();
         bool doneIterating = false;
@@ -365,7 +368,7 @@ internal sealed class PromiseConstructor : Constructor
             if (results.TrueForAll(static x => x is not null) && doneIterating)
             {
                 var array = _realm.Intrinsics.Array.ConstructFast(results);
-                resolve.Call(Undefined, new JsValue[] { array });
+                capability.Resolve.Call(Undefined, array);
             }
         }
 
@@ -392,8 +395,8 @@ internal sealed class PromiseConstructor : Constructor
                 }
                 catch (JavaScriptException e)
                 {
-                    reject.Call(Undefined, new[] { e.Error });
-                    return resultingPromise;
+                    capability.Reject.Call(Undefined, e.Error);
+                    return capability.PromiseInstance;
                 }
 
                 // note that null here is important
@@ -401,7 +404,7 @@ internal sealed class PromiseConstructor : Constructor
                 // In F# it would be Option<JsValue>
                 results.Add(null!);
 
-                var item = promiseResolve.Call(thisObject, new JsValue[] { value });
+                var item = promiseResolve.Call(thisObject, value);
                 var thenProps = item.Get("then");
                 if (thenProps is ICallable thenFunc)
                 {
@@ -443,11 +446,11 @@ internal sealed class PromiseConstructor : Constructor
                             return Undefined;
                         }, 1, PropertyFlag.Configurable);
 
-                    thenFunc.Call(item, new JsValue[] { onSuccess, onFailure });
+                    thenFunc.Call(item, onSuccess, onFailure);
                 }
                 else
                 {
-                    ExceptionHelper.ThrowTypeError(_realm, "Passed non Promise-like value");
+                    Throw.TypeError(_realm, "Passed non Promise-like value");
                 }
 
                 index += 1;
@@ -455,23 +458,28 @@ internal sealed class PromiseConstructor : Constructor
         }
         catch (JavaScriptException e)
         {
-            iterator.Close(CompletionType.Throw);
-            reject.Call(Undefined, new[] { e.Error });
-            return resultingPromise;
+            try
+            {
+                iterator.Close(CompletionType.Throw);
+            }
+            catch (JavaScriptException)
+            {
+                // ignore any errors from closing the iterator
+            }
+            capability.Reject.Call(Undefined, e.Error);
+            return capability.PromiseInstance;
         }
 
-        return resultingPromise;
+        return capability.PromiseInstance;
     }
 
     // https://tc39.es/ecma262/#sec-promise.any
-    private JsValue Any(JsValue thisObject, JsValue[] arguments)
+    private JsValue Any(JsValue thisObject, JsCallArguments arguments)
     {
         if (!TryGetPromiseCapabilityAndIterator(thisObject, arguments, "Promise.any", out var capability, out var promiseResolve, out var iterator))
         {
             return capability.PromiseInstance;
         }
-
-        var (resultingPromise, resolve, reject, resolveObj, _) = capability;
 
         var errors = new List<JsValue>();
         var doneIterating = false;
@@ -487,7 +495,7 @@ internal sealed class PromiseConstructor : Constructor
             {
                 var array = _realm.Intrinsics.Array.ConstructFast(errors);
 
-                reject.Call(Undefined, new JsValue[] { Construct(_realm.Intrinsics.AggregateError, new JsValue[] { array }) });
+                capability.Reject.Call(Undefined, Construct(_realm.Intrinsics.AggregateError, [array]));
             }
         }
 
@@ -526,7 +534,7 @@ internal sealed class PromiseConstructor : Constructor
                 // In F# it would be Option<JsValue>
                 errors.Add(null!);
 
-                var item = promiseResolve.Call(thisObject, new JsValue[] { value });
+                var item = promiseResolve.Call(thisObject, value);
                 var thenProps = item.Get("then");
                 if (thenProps is ICallable thenFunc)
                 {
@@ -547,11 +555,11 @@ internal sealed class PromiseConstructor : Constructor
                             return Undefined;
                         }, 1, PropertyFlag.Configurable);
 
-                    thenFunc.Call(item, new JsValue[] { resolveObj, onError });
+                    thenFunc.Call(item, capability.ResolveObj, onError);
                 }
                 else
                 {
-                    ExceptionHelper.ThrowTypeError(_realm, "Passed non Promise-like value");
+                    Throw.TypeError(_realm, "Passed non Promise-like value");
                 }
 
                 index += 1;
@@ -559,22 +567,26 @@ internal sealed class PromiseConstructor : Constructor
         }
         catch (JavaScriptException e)
         {
-            iterator.Close(CompletionType.Throw);
-            reject.Call(Undefined, new[] { e.Error });
-            return resultingPromise;
+            try
+            {
+                iterator.Close(CompletionType.Throw);
+            }
+            catch (JavaScriptException)
+            {
+                // ignore any errors from closing the iterator
+            }
+            capability.Reject.Call(Undefined, e.Error);
+            return capability.PromiseInstance;
         }
 
-        return resultingPromise;
+        return capability.PromiseInstance;
     }
 
     // https://tc39.es/ecma262/#sec-promise.race
-    private JsValue Race(JsValue thisObject, JsValue[] arguments)
+    private JsValue Race(JsValue thisObject, JsCallArguments arguments)
     {
         if (!TryGetPromiseCapabilityAndIterator(thisObject, arguments, "Promise.race", out var capability, out var promiseResolve, out var iterator))
             return capability.PromiseInstance;
-
-        var (resultingPromise, resolve, reject, _, rejectObj) = capability;
-
 
         // 7. Let result be PerformPromiseRace(iteratorRecord, C, promiseCapability, promiseResolve).
         // https://tc39.es/ecma262/#sec-performpromiserace
@@ -594,31 +606,35 @@ internal sealed class PromiseConstructor : Constructor
                 }
                 catch (JavaScriptException e)
                 {
-                    reject.Call(Undefined, new[] { e.Error });
-                    return resultingPromise;
+                    capability.Reject.Call(Undefined, e.Error);
+                    return capability.PromiseInstance;
                 }
 
                 // h. Let nextPromise be ? Call(promiseResolve, constructor, « nextValue »).
-                var nextPromise = promiseResolve.Call(thisObject, new JsValue[] { nextValue });
+                var nextPromise = promiseResolve.Call(thisObject, nextValue);
 
                 // i. Perform ? Invoke(nextPromise, "then", « resultCapability.[[Resolve]], resultCapability.[[Reject]] »).
 
-                _engine.Invoke(nextPromise, "then", new[] { (JsValue) resolve, rejectObj });
+                _engine.Invoke(nextPromise, "then", [(JsValue) capability.Resolve, capability.RejectObj]);
             } while (true);
         }
         catch (JavaScriptException e)
         {
-            // 8. If result is an abrupt completion, then
-            // a. If iteratorRecord.[[Done]] is false, set result to IteratorClose(iteratorRecord, result).
-            //     b. IfAbruptRejectPromise(result, promiseCapability).
-            iterator.Close(CompletionType.Throw);
-            reject.Call(Undefined, new[] { e.Error });
-            return resultingPromise;
+            try
+            {
+                iterator.Close(CompletionType.Throw);
+            }
+            catch (JavaScriptException)
+            {
+                // ignore any errors from closing the iterator
+            }
+            capability.Reject.Call(Undefined, e.Error);
+            return capability.PromiseInstance;
         }
 
         // 9. Return Completion(result).
         // Note that PerformPromiseRace returns a Promise instance in success case
-        return resultingPromise;
+        return capability.PromiseInstance;
     }
 
 
@@ -640,7 +656,7 @@ internal sealed class PromiseConstructor : Constructor
             return resolve;
         }
 
-        ExceptionHelper.ThrowTypeError(_realm, "resolve is not a function");
+        Throw.TypeError(_realm, "resolve is not a function");
         // Note: throws right before return
         return null;
     }
@@ -671,7 +687,7 @@ internal sealed class PromiseConstructor : Constructor
         JsValue? resolveArg = null;
         JsValue? rejectArg = null;
 
-        JsValue Executor(JsValue thisObject, JsValue[] arguments)
+        JsValue Executor(JsValue thisObject, JsCallArguments arguments)
         {
             // 25.4.1.5.1 GetCapabilitiesExecutor Functions
             // 3. If promiseCapability.[[Resolve]] is not undefined, throw a TypeError exception.
@@ -681,7 +697,7 @@ internal sealed class PromiseConstructor : Constructor
             if (resolveArg is not null && resolveArg != Undefined ||
                 rejectArg is not null && rejectArg != Undefined)
             {
-                ExceptionHelper.ThrowTypeError(engine.Realm, "executor was already called with not undefined args");
+                Throw.TypeError(engine.Realm, "executor was already called with not undefined args");
             }
 
             resolveArg = arguments.At(0);
@@ -692,7 +708,7 @@ internal sealed class PromiseConstructor : Constructor
 
         var executor = new ClrFunction(engine, "", Executor, 2, PropertyFlag.Configurable);
 
-        var instance = ctor.Construct(new JsValue[] { executor }, c);
+        var instance = ctor.Construct([executor], c);
 
         ICallable? resolve = null;
         ICallable? reject = null;
@@ -703,7 +719,7 @@ internal sealed class PromiseConstructor : Constructor
         }
         else
         {
-            ExceptionHelper.ThrowTypeError(engine.Realm, "resolve is not a function");
+            Throw.TypeError(engine.Realm, "resolve is not a function");
         }
 
         if (rejectArg is ICallable rejFunc)
@@ -712,9 +728,14 @@ internal sealed class PromiseConstructor : Constructor
         }
         else
         {
-            ExceptionHelper.ThrowTypeError(engine.Realm, "reject is not a function");
+            Throw.TypeError(engine.Realm, "reject is not a function");
         }
 
-        return new PromiseCapability(instance, resolve, reject, resolveArg, rejectArg);
+        return new PromiseCapability(
+            PromiseInstance: instance,
+            Resolve: resolve,
+            Reject: reject,
+            RejectObj: rejectArg,
+            ResolveObj: resolveArg);
     }
 }

@@ -21,6 +21,7 @@ public sealed class ArrayPrototype : ArrayInstance
 {
     private readonly Realm _realm;
     private readonly ArrayConstructor _constructor;
+    private readonly ObjectTraverseStack _joinStack;
     internal ClrFunction? _originalIteratorFunction;
 
     internal ArrayPrototype(
@@ -33,6 +34,7 @@ public sealed class ArrayPrototype : ArrayInstance
         _length = new PropertyDescriptor(JsNumber.PositiveZero, PropertyFlag.Writable);
         _realm = realm;
         _constructor = arrayConstructor;
+        _joinStack = new(engine);
     }
 
     protected override void Initialize()
@@ -67,7 +69,7 @@ public sealed class ArrayPrototype : ArrayInstance
             ["reduce"] = new LazyPropertyDescriptor<ArrayPrototype>(this, static prototype => new ClrFunction(prototype._engine, "reduce", prototype.Reduce, 1, PropertyFlag.Configurable), PropertyFlags),
             ["reduceRight"] = new LazyPropertyDescriptor<ArrayPrototype>(this, static prototype => new ClrFunction(prototype._engine, "reduceRight", prototype.ReduceRight, 1, PropertyFlag.Configurable), PropertyFlags),
             ["reverse"] = new LazyPropertyDescriptor<ArrayPrototype>(this, static prototype => new ClrFunction(prototype._engine, "reverse", prototype.Reverse, 0, PropertyFlag.Configurable), PropertyFlags),
-            ["shift"] = new LazyPropertyDescriptor<ArrayPrototype>(this, static prototype => new ClrFunction(prototype._engine, "shift",prototype. Shift, 0, PropertyFlag.Configurable), PropertyFlags),
+            ["shift"] = new LazyPropertyDescriptor<ArrayPrototype>(this, static prototype => new ClrFunction(prototype._engine, "shift", prototype.Shift, 0, PropertyFlag.Configurable), PropertyFlags),
             ["slice"] = new LazyPropertyDescriptor<ArrayPrototype>(this, static prototype => new ClrFunction(prototype._engine, "slice", prototype.Slice, 2, PropertyFlag.Configurable), PropertyFlags),
             ["some"] = new LazyPropertyDescriptor<ArrayPrototype>(this, static prototype => new ClrFunction(prototype._engine, "some", prototype.Some, 1, PropertyFlag.Configurable), PropertyFlags),
             ["sort"] = new LazyPropertyDescriptor<ArrayPrototype>(this, static prototype => new ClrFunction(prototype._engine, "sort", prototype.Sort, 1, PropertyFlag.Configurable), PropertyFlags),
@@ -117,29 +119,29 @@ public sealed class ArrayPrototype : ArrayInstance
         SetSymbols(symbols);
     }
 
-    private ObjectInstance Keys(JsValue thisObject, JsValue[] arguments)
+    private ObjectInstance Keys(JsValue thisObject, JsCallArguments arguments)
     {
         if (thisObject is ObjectInstance oi && oi.IsArrayLike)
         {
             return _realm.Intrinsics.ArrayIteratorPrototype.Construct(oi, ArrayIteratorType.Key);
         }
 
-        ExceptionHelper.ThrowTypeError(_realm, "cannot construct iterator");
+        Throw.TypeError(_realm, "cannot construct iterator");
         return null;
     }
 
-    internal ObjectInstance Values(JsValue thisObject, JsValue[] arguments)
+    internal ObjectInstance Values(JsValue thisObject, JsCallArguments arguments)
     {
         if (thisObject is ObjectInstance oi && oi.IsArrayLike)
         {
             return _realm.Intrinsics.ArrayIteratorPrototype.Construct(oi, ArrayIteratorType.Value);
         }
 
-        ExceptionHelper.ThrowTypeError(_realm, "cannot construct iterator");
+        Throw.TypeError(_realm, "cannot construct iterator");
         return null;
     }
 
-    private ObjectInstance With(JsValue thisObject, JsValue[] arguments)
+    private ObjectInstance With(JsValue thisObject, JsCallArguments arguments)
     {
         var o = ArrayOperations.For(TypeConverter.ToObject(_realm, thisObject), forWrite: false);
         var len = o.GetLongLength();
@@ -158,7 +160,7 @@ public sealed class ArrayPrototype : ArrayInstance
 
         if (actualIndex >= (long) len || actualIndex < 0)
         {
-            ExceptionHelper.ThrowRangeError(_realm, "Invalid start index");
+            Throw.RangeError(_realm, "Invalid start index");
         }
 
         var a = CreateBackingArray(len);
@@ -171,21 +173,21 @@ public sealed class ArrayPrototype : ArrayInstance
         return new JsArray(_engine, a);
     }
 
-    private ObjectInstance Entries(JsValue thisObject, JsValue[] arguments)
+    private ObjectInstance Entries(JsValue thisObject, JsCallArguments arguments)
     {
         if (thisObject is ObjectInstance oi && oi.IsArrayLike)
         {
             return _realm.Intrinsics.ArrayIteratorPrototype.Construct(oi, ArrayIteratorType.KeyAndValue);
         }
 
-        ExceptionHelper.ThrowTypeError(_realm, "cannot construct iterator");
+        Throw.TypeError(_realm, "cannot construct iterator");
         return null;
     }
 
     /// <summary>
     /// https://tc39.es/ecma262/#sec-array.prototype.fill
     /// </summary>
-    private JsValue Fill(JsValue thisObject, JsValue[] arguments)
+    private JsValue Fill(JsValue thisObject, JsCallArguments arguments)
     {
         var value = arguments.At(0);
         var start = arguments.At(1);
@@ -238,7 +240,7 @@ public sealed class ArrayPrototype : ArrayInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-array.prototype.copywithin
     /// </summary>
-    private JsValue CopyWithin(JsValue thisObject, JsValue[] arguments)
+    private JsValue CopyWithin(JsValue thisObject, JsCallArguments arguments)
     {
         var o = TypeConverter.ToObject(_realm, thisObject);
 
@@ -321,7 +323,7 @@ public sealed class ArrayPrototype : ArrayInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-array.prototype.lastindexof
     /// </summary>
-    private JsValue LastIndexOf(JsValue thisObject, JsValue[] arguments)
+    private JsValue LastIndexOf(JsValue thisObject, JsCallArguments arguments)
     {
         var o = ArrayOperations.For(_realm, thisObject, forWrite: false);
         var len = o.GetLongLength();
@@ -374,7 +376,7 @@ public sealed class ArrayPrototype : ArrayInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-array.prototype.reduce
     /// </summary>
-    private JsValue Reduce(JsValue thisObject, JsValue[] arguments)
+    private JsValue Reduce(JsValue thisObject, JsCallArguments arguments)
     {
         var callbackfn = arguments.At(0);
         var initialValue = arguments.At(1);
@@ -386,7 +388,7 @@ public sealed class ArrayPrototype : ArrayInstance
 
         if (len == 0 && arguments.Length < 2)
         {
-            ExceptionHelper.ThrowTypeError(_realm);
+            Throw.TypeError(_realm);
         }
 
         var k = 0;
@@ -410,7 +412,7 @@ public sealed class ArrayPrototype : ArrayInstance
 
             if (kPresent == false)
             {
-                ExceptionHelper.ThrowTypeError(_realm);
+                Throw.TypeError(_realm);
             }
         }
 
@@ -436,7 +438,7 @@ public sealed class ArrayPrototype : ArrayInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-array.prototype.filter
     /// </summary>
-    private JsValue Filter(JsValue thisObject, JsValue[] arguments)
+    private JsValue Filter(JsValue thisObject, JsCallArguments arguments)
     {
         var callbackfn = arguments.At(0);
         var thisArg = arguments.At(1);
@@ -476,7 +478,7 @@ public sealed class ArrayPrototype : ArrayInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-array.prototype.map
     /// </summary>
-    private JsValue Map(JsValue thisObject, JsValue[] arguments)
+    private JsValue Map(JsValue thisObject, JsCallArguments arguments)
     {
         if (thisObject is JsArray { CanUseFastAccess: true } arrayInstance
             && !arrayInstance.HasOwnProperty(CommonProperties.Constructor))
@@ -489,7 +491,7 @@ public sealed class ArrayPrototype : ArrayInstance
 
         if (len > ArrayOperations.MaxArrayLength)
         {
-            ExceptionHelper.ThrowRangeError(_realm, "Invalid array length");
+            Throw.RangeError(_realm, "Invalid array length");
         }
 
         var callbackfn = arguments.At(0);
@@ -516,7 +518,7 @@ public sealed class ArrayPrototype : ArrayInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-array.prototype.flat
     /// </summary>
-    private JsValue Flat(JsValue thisObject, JsValue[] arguments)
+    private JsValue Flat(JsValue thisObject, JsCallArguments arguments)
     {
         var operations = ArrayOperations.For(_realm, thisObject, forWrite: false);
         var sourceLen = operations.GetLength();
@@ -540,7 +542,7 @@ public sealed class ArrayPrototype : ArrayInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-array.prototype.flatmap
     /// </summary>
-    private JsValue FlatMap(JsValue thisObject, JsValue[] arguments)
+    private JsValue FlatMap(JsValue thisObject, JsCallArguments arguments)
     {
         var O = ArrayOperations.For(_realm, thisObject, forWrite: false);
         var mapperFunction = arguments.At(0);
@@ -550,7 +552,7 @@ public sealed class ArrayPrototype : ArrayInstance
 
         if (!mapperFunction.IsCallable)
         {
-            ExceptionHelper.ThrowTypeError(_realm, "flatMap mapper function is not callable");
+            Throw.TypeError(_realm, "flatMap mapper function is not callable");
         }
 
         var A = _realm.Intrinsics.Array.ArraySpeciesCreate(O.Target, 0);
@@ -613,7 +615,7 @@ public sealed class ArrayPrototype : ArrayInstance
                 {
                     if (targetIndex >= NumberConstructor.MaxSafeInteger)
                     {
-                        ExceptionHelper.ThrowTypeError(_realm);
+                        Throw.TypeError(_realm);
                     }
 
                     target.CreateDataPropertyOrThrow(targetIndex, element);
@@ -632,7 +634,7 @@ public sealed class ArrayPrototype : ArrayInstance
         return targetIndex;
     }
 
-    private JsValue ForEach(JsValue thisObject, JsValue[] arguments)
+    private JsValue ForEach(JsValue thisObject, JsCallArguments arguments)
     {
         var callbackfn = arguments.At(0);
         var thisArg = arguments.At(1);
@@ -661,7 +663,7 @@ public sealed class ArrayPrototype : ArrayInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-array.prototype.includes
     /// </summary>
-    private JsValue Includes(JsValue thisObject, JsValue[] arguments)
+    private JsValue Includes(JsValue thisObject, JsCallArguments arguments)
     {
         var o = ArrayOperations.For(_realm, thisObject, forWrite: false);
         var len = (long) o.GetLongLength();
@@ -709,7 +711,7 @@ public sealed class ArrayPrototype : ArrayInstance
         return false;
     }
 
-    private JsValue Some(JsValue thisObject, JsValue[] arguments)
+    private JsValue Some(JsValue thisObject, JsCallArguments arguments)
     {
         var target = TypeConverter.ToObject(_realm, thisObject);
         return target.FindWithCallback(arguments, out _, out _, false);
@@ -718,7 +720,7 @@ public sealed class ArrayPrototype : ArrayInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-array.prototype.every
     /// </summary>
-    private JsValue Every(JsValue thisObject, JsValue[] arguments)
+    private JsValue Every(JsValue thisObject, JsCallArguments arguments)
     {
         var o = ArrayOperations.For(_realm, thisObject, forWrite: false);
         ulong len = o.GetLongLength();
@@ -755,7 +757,7 @@ public sealed class ArrayPrototype : ArrayInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-array.prototype.indexof
     /// </summary>
-    private JsValue IndexOf(JsValue thisObject, JsValue[] arguments)
+    private JsValue IndexOf(JsValue thisObject, JsCallArguments arguments)
     {
         var o = ArrayOperations.For(_realm, thisObject, forWrite: false);
         var len = o.GetLongLength();
@@ -821,7 +823,7 @@ public sealed class ArrayPrototype : ArrayInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-array.prototype.find
     /// </summary>
-    private JsValue Find(JsValue thisObject, JsValue[] arguments)
+    private JsValue Find(JsValue thisObject, JsCallArguments arguments)
     {
         var target = TypeConverter.ToObject(_realm, thisObject);
         target.FindWithCallback(arguments, out _, out var value, visitUnassigned: true);
@@ -831,7 +833,7 @@ public sealed class ArrayPrototype : ArrayInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-array.prototype.findindex
     /// </summary>
-    private JsValue FindIndex(JsValue thisObject, JsValue[] arguments)
+    private JsValue FindIndex(JsValue thisObject, JsCallArguments arguments)
     {
         var target = TypeConverter.ToObject(_realm, thisObject);
         if (target.FindWithCallback(arguments, out var index, out _, visitUnassigned: true))
@@ -841,14 +843,14 @@ public sealed class ArrayPrototype : ArrayInstance
         return -1;
     }
 
-    private JsValue FindLast(JsValue thisObject, JsValue[] arguments)
+    private JsValue FindLast(JsValue thisObject, JsCallArguments arguments)
     {
         var target = TypeConverter.ToObject(_realm, thisObject);
         target.FindWithCallback(arguments, out _, out var value, visitUnassigned: true, fromEnd: true);
         return value;
     }
 
-    private JsValue FindLastIndex(JsValue thisObject, JsValue[] arguments)
+    private JsValue FindLastIndex(JsValue thisObject, JsCallArguments arguments)
     {
         var target = TypeConverter.ToObject(_realm, thisObject);
         if (target.FindWithCallback(arguments, out var index, out _, visitUnassigned: true, fromEnd: true))
@@ -861,7 +863,7 @@ public sealed class ArrayPrototype : ArrayInstance
     /// <summary>
     /// https://tc39.es/proposal-relative-indexing-method/#sec-array-prototype-additions
     /// </summary>
-    private JsValue At(JsValue thisObject, JsValue[] arguments)
+    private JsValue At(JsValue thisObject, JsCallArguments arguments)
     {
         var target = TypeConverter.ToObject(_realm, thisObject);
         var len = target.GetLength();
@@ -888,7 +890,7 @@ public sealed class ArrayPrototype : ArrayInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-array.prototype.splice
     /// </summary>
-    private JsValue Splice(JsValue thisObject, JsValue[] arguments)
+    private JsValue Splice(JsValue thisObject, JsCallArguments arguments)
     {
         var start = arguments.At(0);
         var deleteCount = arguments.At(1);
@@ -927,7 +929,7 @@ public sealed class ArrayPrototype : ArrayInstance
             var dc = TypeConverter.ToInteger(deleteCount);
             actualDeleteCount = (ulong) System.Math.Min(System.Math.Max(dc, 0), len - actualStart);
 
-            items = System.Array.Empty<JsValue>();
+            items = [];
             if (arguments.Length > 2)
             {
                 items = new JsValue[arguments.Length - 2];
@@ -937,7 +939,7 @@ public sealed class ArrayPrototype : ArrayInstance
 
         if (len + insertCount - actualDeleteCount > ArrayOperations.MaxArrayLikeLength)
         {
-            ExceptionHelper.ThrowTypeError(_realm, "Invalid array length");
+            Throw.TypeError(_realm, "Invalid array length");
         }
 
         var instance = _realm.Intrinsics.Array.ArraySpeciesCreate(obj, actualDeleteCount);
@@ -1008,7 +1010,7 @@ public sealed class ArrayPrototype : ArrayInstance
     /// <summary>
     /// /https://tc39.es/ecma262/#sec-array.prototype.unshift
     /// </summary>
-    private JsValue Unshift(JsValue thisObject, JsValue[] arguments)
+    private JsValue Unshift(JsValue thisObject, JsCallArguments arguments)
     {
         var o = ArrayOperations.For(_realm, thisObject, forWrite: true);
         var len = o.GetLongLength();
@@ -1016,7 +1018,7 @@ public sealed class ArrayPrototype : ArrayInstance
 
         if (len + argCount > ArrayOperations.MaxArrayLikeLength)
         {
-            ExceptionHelper.ThrowTypeError(_realm, "Invalid array length");
+            Throw.TypeError(_realm, "Invalid array length");
         }
 
         // only prepare for larger if we cannot rely on default growth algorithm
@@ -1052,7 +1054,7 @@ public sealed class ArrayPrototype : ArrayInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-array.prototype.sort
     /// </summary>
-    private JsValue Sort(JsValue thisObject, JsValue[] arguments)
+    private JsValue Sort(JsValue thisObject, JsCallArguments arguments)
     {
         var obj = ArrayOperations.For(_realm, thisObject, forWrite: true);
         var compareFn = GetCompareFunction(arguments.At(0));
@@ -1091,11 +1093,13 @@ public sealed class ArrayPrototype : ArrayInstance
                 ordered = items.OrderBy(x => x, comparer);
             }
 #else
-    #if NET8_0_OR_GREATER
-                ordered = items.Order(comparer);
-    #else
-                ordered = items.OrderBy(x => x, comparer);
-    #endif
+
+#if NET8_0_OR_GREATER
+            ordered = items.Order(comparer);
+#else
+            ordered = items.OrderBy(x => x, comparer);
+#endif
+
 #endif
             uint j = 0;
             foreach (var item in ordered)
@@ -1120,7 +1124,7 @@ public sealed class ArrayPrototype : ArrayInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-array.prototype.slice
     /// </summary>
-    private JsValue Slice(JsValue thisObject, JsValue[] arguments)
+    private JsValue Slice(JsValue thisObject, JsCallArguments arguments)
     {
         var start = arguments.At(0);
         var end = arguments.At(1);
@@ -1159,7 +1163,7 @@ public sealed class ArrayPrototype : ArrayInstance
 
         if (k < final && final - k > ArrayOperations.MaxArrayLength)
         {
-            ExceptionHelper.ThrowRangeError(_realm, "Invalid array length");
+            Throw.RangeError(_realm, "Invalid array length");
         }
 
         var length = (uint) System.Math.Max(0, (long) final - (long) k);
@@ -1183,7 +1187,7 @@ public sealed class ArrayPrototype : ArrayInstance
         return a;
     }
 
-    private JsValue Shift(JsValue thisObject, JsValue[] arg2)
+    private JsValue Shift(JsValue thisObject, JsCallArguments arguments)
     {
         var o = ArrayOperations.For(_realm, thisObject, forWrite: true);
         var len = o.GetLength();
@@ -1216,7 +1220,7 @@ public sealed class ArrayPrototype : ArrayInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-array.prototype.reverse
     /// </summary>
-    private JsValue Reverse(JsValue thisObject, JsValue[] arguments)
+    private JsValue Reverse(JsValue thisObject, JsCallArguments arguments)
     {
         var o = ArrayOperations.For(_realm, thisObject, forWrite: true);
         var len = o.GetLongLength();
@@ -1259,7 +1263,7 @@ public sealed class ArrayPrototype : ArrayInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-array.prototype.join
     /// </summary>
-    private JsValue Join(JsValue thisObject, JsValue[] arguments)
+    private JsValue Join(JsValue thisObject, JsCallArguments arguments)
     {
         var separator = arguments.At(0);
         var o = ArrayOperations.For(_realm, thisObject, forWrite: false);
@@ -1269,6 +1273,11 @@ public sealed class ArrayPrototype : ArrayInstance
 
         // as per the spec, this has to be called after ToString(separator)
         if (len == 0)
+        {
+            return JsString.Empty;
+        }
+
+        if (!_joinStack.TryEnter(thisObject))
         {
             return JsString.Empty;
         }
@@ -1283,6 +1292,7 @@ public sealed class ArrayPrototype : ArrayInstance
         var s = StringFromJsValue(o.Get(0));
         if (len == 1)
         {
+            _joinStack.Exit();
             return s;
         }
 
@@ -1296,6 +1306,7 @@ public sealed class ArrayPrototype : ArrayInstance
             }
             sb.Append(StringFromJsValue(o.Get(k)));
         }
+        _joinStack.Exit();
 
         return sb.ToString();
     }
@@ -1303,7 +1314,7 @@ public sealed class ArrayPrototype : ArrayInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-array.prototype.tolocalestring
     /// </summary>
-    private JsValue ToLocaleString(JsValue thisObject, JsValue[] arguments)
+    private JsValue ToLocaleString(JsValue thisObject, JsCallArguments arguments)
     {
         const string Separator = ",";
 
@@ -1314,6 +1325,16 @@ public sealed class ArrayPrototype : ArrayInstance
             return JsString.Empty;
         }
 
+        if (!_joinStack.TryEnter(thisObject))
+        {
+            return JsString.Empty;
+        }
+
+        // Per ECMA-402, always pass locales and options to element's toLocaleString
+        var locales = arguments.At(0);
+        var options = arguments.At(1);
+        var invokeArgs = new[] { locales, options };
+
         using var r = new ValueStringBuilder();
         for (uint k = 0; k < len; k++)
         {
@@ -1323,10 +1344,11 @@ public sealed class ArrayPrototype : ArrayInstance
             }
             if (array.TryGetValue(k, out var nextElement) && !nextElement.IsNullOrUndefined())
             {
-                var s = TypeConverter.ToString(Invoke(nextElement, "toLocaleString", []));
+                var s = TypeConverter.ToString(Invoke(nextElement, "toLocaleString", invokeArgs));
                 r.Append(s);
             }
         }
+        _joinStack.Exit();
 
         return r.ToString();
     }
@@ -1334,7 +1356,7 @@ public sealed class ArrayPrototype : ArrayInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-array.prototype.concat
     /// </summary>
-    private JsValue Concat(JsValue thisObject, JsValue[] arguments)
+    private JsValue Concat(JsValue thisObject, JsCallArguments arguments)
     {
         var o = TypeConverter.ToObject(_realm, thisObject);
         var items = new List<JsValue>(arguments.Length + 1) { o };
@@ -1360,7 +1382,7 @@ public sealed class ArrayPrototype : ArrayInstance
 
                     if (n + len > ArrayOperations.MaxArrayLikeLength)
                     {
-                        ExceptionHelper.ThrowTypeError(_realm, "Invalid array length");
+                        Throw.TypeError(_realm, "Invalid array length");
                     }
 
                     for (uint k = 0; k < len; k++)
@@ -1385,11 +1407,11 @@ public sealed class ArrayPrototype : ArrayInstance
         return a;
     }
 
-    internal JsValue ToString(JsValue thisObject, JsValue[] arguments)
+    internal JsValue ToString(JsValue thisObject, JsCallArguments arguments)
     {
         var array = TypeConverter.ToObject(_realm, thisObject);
 
-        Func<JsValue, JsValue[], JsValue> func;
+        JsCallDelegate func;
         if (array.Get("join") is ICallable joinFunc)
         {
             func = joinFunc.Call;
@@ -1402,7 +1424,7 @@ public sealed class ArrayPrototype : ArrayInstance
         return func(array, Arguments.Empty);
     }
 
-    private JsValue ToReversed(JsValue thisObject, JsValue[] arguments)
+    private JsValue ToReversed(JsValue thisObject, JsCallArguments arguments)
     {
         var o = ArrayOperations.For(_realm, thisObject, forWrite: false);
 
@@ -1423,7 +1445,7 @@ public sealed class ArrayPrototype : ArrayInstance
         return new JsArray(_engine, a);
     }
 
-    private JsValue ToSorted(JsValue thisObject, JsValue[] arguments)
+    private JsValue ToSorted(JsValue thisObject, JsCallArguments arguments)
     {
         var o = ArrayOperations.For(_realm, thisObject, forWrite: false);
         var compareFn = GetCompareFunction(arguments.At(0));
@@ -1443,7 +1465,7 @@ public sealed class ArrayPrototype : ArrayInstance
         return new JsArray(_engine, array);
     }
 
-    private JsValue ToSpliced(JsValue thisObject, JsValue[] arguments)
+    private JsValue ToSpliced(JsValue thisObject, JsCallArguments arguments)
     {
         var start = arguments.At(0);
         var deleteCount = arguments.At(1);
@@ -1485,7 +1507,7 @@ public sealed class ArrayPrototype : ArrayInstance
             var dc = TypeConverter.ToIntegerOrInfinity(deleteCount);
             actualDeleteCount = (ulong) System.Math.Min(System.Math.Max(dc, 0), len - actualStart);
 
-            items = System.Array.Empty<JsValue>();
+            items = [];
             if (arguments.Length > 2)
             {
                 items = new JsValue[arguments.Length - 2];
@@ -1496,7 +1518,7 @@ public sealed class ArrayPrototype : ArrayInstance
         var newLen = len + insertCount - actualDeleteCount;
         if (newLen > ArrayOperations.MaxArrayLikeLength)
         {
-            ExceptionHelper.ThrowTypeError(_realm, "Invalid input length");
+            Throw.TypeError(_realm, "Invalid input length");
         }
 
         ValidateArrayLength(newLen);
@@ -1551,7 +1573,7 @@ public sealed class ArrayPrototype : ArrayInstance
         {
             if (compareArg is not ICallable callable)
             {
-                ExceptionHelper.ThrowTypeError(_realm, "The comparison function must be either a function or undefined");
+                Throw.TypeError(_realm, "The comparison function must be either a function or undefined");
                 return null;
             }
             compareFn = callable;
@@ -1563,7 +1585,7 @@ public sealed class ArrayPrototype : ArrayInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-array.prototype.reduceright
     /// </summary>
-    private JsValue ReduceRight(JsValue thisObject, JsValue[] arguments)
+    private JsValue ReduceRight(JsValue thisObject, JsCallArguments arguments)
     {
         var callbackfn = arguments.At(0);
         var initialValue = arguments.At(1);
@@ -1575,7 +1597,7 @@ public sealed class ArrayPrototype : ArrayInstance
 
         if (len == 0 && arguments.Length < 2)
         {
-            ExceptionHelper.ThrowTypeError(_realm);
+            Throw.TypeError(_realm);
         }
 
         long k = (long) (len - 1);
@@ -1599,7 +1621,7 @@ public sealed class ArrayPrototype : ArrayInstance
 
             if (kPresent == false)
             {
-                ExceptionHelper.ThrowTypeError(_realm);
+                Throw.TypeError(_realm);
             }
         }
 
@@ -1622,7 +1644,7 @@ public sealed class ArrayPrototype : ArrayInstance
     /// <summary>
     /// https://tc39.es/ecma262/#sec-array.prototype.push
     /// </summary>
-    public JsValue Push(JsValue thisObject, JsValue[] arguments)
+    public JsValue Push(JsValue thisObject, JsCallArguments arguments)
     {
         if (thisObject is JsArray { CanUseFastAccess: true } arrayInstance)
         {
@@ -1634,7 +1656,7 @@ public sealed class ArrayPrototype : ArrayInstance
 
         if (n + (ulong) arguments.Length > ArrayOperations.MaxArrayLikeLength)
         {
-            ExceptionHelper.ThrowTypeError(_realm, "Invalid array length");
+            Throw.TypeError(_realm, "Invalid array length");
         }
 
         foreach (var a in arguments)
@@ -1647,7 +1669,7 @@ public sealed class ArrayPrototype : ArrayInstance
         return n;
     }
 
-    public JsValue Pop(JsValue thisObject, JsValue[] arguments)
+    public JsValue Pop(JsValue thisObject, JsCallArguments arguments)
     {
         if (thisObject is JsArray { CanUseFastAccess: true } array)
         {
@@ -1679,7 +1701,7 @@ public sealed class ArrayPrototype : ArrayInstance
     {
         if (length > ArrayOperations.MaxArrayLength)
         {
-            ExceptionHelper.ThrowRangeError(_engine.Realm, "Invalid array length " + length);
+            Throw.RangeError(_engine.Realm, "Invalid array length " + length);
         }
     }
 

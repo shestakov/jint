@@ -116,11 +116,9 @@ public sealed class TypeResolver
         // we can always check indexer if there's one, and then fall back to properties if indexer returns null
         IndexerAccessor.TryFindIndexer(engine, type, memberName, out var indexerAccessor, out var indexer);
 
-        const BindingFlags BindingFlags = BindingFlags.Static | BindingFlags.Instance | BindingFlags.Public;
-
         // properties and fields cannot be numbers
         if (!isInteger
-            && TryFindMemberAccessor(engine, type, memberName, BindingFlags, indexer, out var temp)
+            && TryFindMemberAccessor(engine, type, memberName, bindingFlags: null, indexer, out var temp)
             && (!mustBeReadable || temp.Readable)
             && (!mustBeWritable || temp.Writable))
         {
@@ -276,7 +274,7 @@ public sealed class TypeResolver
 
         if (paramType == typeof(int))
         {
-            return  isInteger ? 0 : 10;
+            return isInteger ? 0 : 10;
         }
 
         if (paramType == typeof(string))
@@ -291,7 +289,7 @@ public sealed class TypeResolver
         Engine engine,
         [DynamicallyAccessedMembers(InteropHelper.DefaultDynamicallyAccessedMemberTypes | DynamicallyAccessedMemberTypes.Interfaces)] Type type,
         string memberName,
-        BindingFlags bindingFlags,
+        BindingFlags? bindingFlags,
         PropertyInfo? indexerToTry,
         [NotNullWhen(true)] out ReflectionAccessor? accessor)
     {
@@ -302,7 +300,7 @@ public sealed class TypeResolver
 
         PropertyInfo? GetProperty([DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] Type t)
         {
-            foreach (var p in t.GetProperties(bindingFlags))
+            foreach (var p in t.GetProperties(bindingFlags ?? engine.Options.Interop.ObjectWrapperReportedPropertyBindingFlags))
             {
                 if (!Filter(engine, type, p))
                 {
@@ -317,6 +315,14 @@ public sealed class TypeResolver
                     {
                         if (memberNameComparer.Equals(name, memberName))
                         {
+                            // If one property hides another (e.g., by public new), the derived property is returned.
+                            if (property is not null
+                                && p.DeclaringType is not null
+                                && property.DeclaringType is not null
+                                && property.DeclaringType.IsSubclassOf(p.DeclaringType))
+                            {
+                                continue;
+                            }
                             property = p;
                             break;
                         }
@@ -350,7 +356,7 @@ public sealed class TypeResolver
 
         // look for a field
         FieldInfo? field = null;
-        foreach (var f in type.GetFields(bindingFlags))
+        foreach (var f in type.GetFields(bindingFlags ?? engine.Options.Interop.ObjectWrapperReportedFieldBindingFlags))
         {
             if (!Filter(engine, type, f))
             {
@@ -392,7 +398,7 @@ public sealed class TypeResolver
             }
         }
 
-        foreach (var m in type.GetMethods(bindingFlags))
+        foreach (var m in type.GetMethods(bindingFlags ?? engine.Options.Interop.ObjectWrapperReportedMethodBindingFlags))
         {
             AddMethod(m);
         }
@@ -417,7 +423,7 @@ public sealed class TypeResolver
         // Add Object methods to interface
         if (type.IsInterface)
         {
-            foreach (var m in typeof(object).GetMethods(bindingFlags))
+            foreach (var m in typeof(object).GetMethods(bindingFlags ?? engine.Options.Interop.ObjectWrapperReportedMethodBindingFlags))
             {
                 AddMethod(m);
             }
@@ -430,7 +436,7 @@ public sealed class TypeResolver
         }
 
         // look for nested type
-        var nestedType = type.GetNestedType(memberName, bindingFlags);
+        var nestedType = type.GetNestedType(memberName, bindingFlags ?? BindingFlags.Instance | BindingFlags.Public | BindingFlags.Static);
         if (nestedType != null)
         {
             var typeReference = TypeReference.CreateTypeReference(engine, nestedType);
@@ -477,7 +483,7 @@ public sealed class TypeResolver
             if (equals && x.Length > 1)
             {
 #if SUPPORTS_SPAN_PARSE
-                    equals = x.AsSpan(1).SequenceEqual(y.AsSpan(1));
+                equals = x.AsSpan(1).SequenceEqual(y.AsSpan(1));
 #else
                 equals = string.Equals(x.Substring(1), y.Substring(1), StringComparison.Ordinal);
 #endif

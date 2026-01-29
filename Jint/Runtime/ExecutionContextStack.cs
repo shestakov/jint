@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using Jint.Collections;
+using Jint.Native.AsyncGenerator;
 using Jint.Native.Generator;
 using Jint.Runtime.Environments;
 using Environment = Jint.Runtime.Environments.Environment;
@@ -48,6 +49,15 @@ internal sealed class ExecutionContextStack
         return ref executionContext;
     }
 
+    public ref readonly ExecutionContext ReplaceTopAsyncGenerator(AsyncGeneratorInstance newEnv)
+    {
+        var array = _stack._array;
+        var size = _stack._size;
+        ref var executionContext = ref array[size - 1];
+        executionContext = executionContext.UpdateAsyncGenerator(newEnv);
+        return ref executionContext;
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public ref readonly ExecutionContext Peek() => ref _stack.Peek();
 
@@ -58,7 +68,7 @@ internal sealed class ExecutionContextStack
     public void Push(in ExecutionContext context) => _stack.Push(in context);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public ref readonly ExecutionContext Pop() => ref _stack.Pop();
+    public void Pop() => _stack.PopAndDiscard();
 
     public IScriptOrModule? GetActiveScriptOrModule()
     {

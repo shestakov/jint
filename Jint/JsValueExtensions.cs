@@ -1,6 +1,7 @@
 using System.Diagnostics.Contracts;
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using System.Threading;
 using Jint.Native;
 using Jint.Native.Function;
 using Jint.Native.Object;
@@ -26,7 +27,6 @@ public static class JsValueExtensions
     {
         return value._type == InternalTypes.Undefined;
     }
-
 
     [Pure]
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -134,11 +134,14 @@ public static class JsValueExtensions
         return value._type == InternalTypes.Symbol;
     }
 
+    /// <summary>
+    /// https://tc39.es/ecma262/#sec-canbeheldweakly
+    /// </summary>
     [Pure]
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static bool CanBeHeldWeakly(this JsValue value, GlobalSymbolRegistry symbolRegistry)
     {
-        return value.IsObject() || (value.IsSymbol() && !symbolRegistry.ContainsCustom(value));
+        return value.IsObject() || (value.IsSymbol() && symbolRegistry.KeyForSymbol(value).IsUndefined());
     }
 
     [Pure]
@@ -147,7 +150,7 @@ public static class JsValueExtensions
     {
         if (!value.IsDate())
         {
-            ExceptionHelper.ThrowArgumentException("The value is not a date");
+            Throw.ArgumentException("The value is not a date");
         }
 
         return (JsDate) value;
@@ -158,7 +161,7 @@ public static class JsValueExtensions
     {
         if (!value.IsRegExp())
         {
-            ExceptionHelper.ThrowArgumentException("The value is not a regex");
+            Throw.ArgumentException("The value is not a regex");
         }
 
         return (JsRegExp) value;
@@ -170,7 +173,7 @@ public static class JsValueExtensions
     {
         if (!value.IsObject())
         {
-            ExceptionHelper.ThrowArgumentException("The value is not an object");
+            Throw.ArgumentException("The value is not an object");
         }
 
         return (ObjectInstance) value;
@@ -182,7 +185,7 @@ public static class JsValueExtensions
     {
         if (!value.IsObject())
         {
-            ExceptionHelper.ThrowArgumentException("The value is not an object");
+            Throw.ArgumentException("The value is not an object");
         }
 
         return (value as TInstance)!;
@@ -194,7 +197,7 @@ public static class JsValueExtensions
     {
         if (!value.IsArray())
         {
-            ExceptionHelper.ThrowArgumentException("The value is not an array");
+            Throw.ArgumentException("The value is not an array");
         }
 
         return (JsArray) value;
@@ -607,7 +610,7 @@ public static class JsValueExtensions
     }
 
     [Pure]
-    public static JsValue Call(this JsValue value, params JsValue[] arguments)
+    public static JsValue Call(this JsValue value, params JsCallArguments arguments)
     {
         if (value is ObjectInstance objectInstance)
         {
@@ -618,7 +621,7 @@ public static class JsValueExtensions
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static JsValue Call(this JsValue value, JsValue thisObj, JsValue[] arguments)
+    public static JsValue Call(this JsValue value, JsValue thisObj, JsCallArguments arguments)
     {
         if (value is ObjectInstance objectInstance)
         {
@@ -631,7 +634,7 @@ public static class JsValueExtensions
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static JsValue ThrowNotObject(JsValue value)
     {
-        ExceptionHelper.ThrowArgumentException(value + " is not object");
+        Throw.ArgumentException(value + " is not object");
         return null;
     }
 
@@ -645,27 +648,105 @@ public static class JsValueExtensions
     /// </summary>
     /// <param name="value">value to unwrap</param>
     /// <returns>inner value if Promise the value itself otherwise</returns>
-    public static JsValue UnwrapIfPromise(this JsValue value)
+    public static JsValue UnwrapIfPromise(this JsValue value) => UnwrapIfPromise(value, TimeSpan.FromSeconds(10));
+
+    /// <summary>
+    /// If the value is a Promise
+    ///     1. If "Fulfilled" returns the value it was fulfilled with
+    ///     2. If "Rejected" throws "PromiseRejectedException" with the rejection reason
+    ///     3. If "Pending" throws "InvalidOperationException". Should be called only in "Settled" state
+    /// Else
+    ///     returns the value intact
+    /// </summary>
+    /// <param name="value">value to unwrap</param>
+    /// <param name="timeout">timeout to wait</param>
+    /// <returns>inner value if Promise the value itself otherwise</returns>
+    public static JsValue UnwrapIfPromise(this JsValue value, TimeSpan timeout)
+        => UnwrapIfPromiseCore(value, timeout, CancellationToken.None);
+
+    /// <summary>
+    /// If the value is a Promise
+    ///     1. If "Fulfilled" returns the value it was fulfilled with
+    ///     2. If "Rejected" throws "PromiseRejectedException" with the rejection reason
+    ///     3. If "Pending" throws "OperationCanceledException" if cancellation is requested
+    /// Else
+    ///     returns the value intact
+    /// </summary>
+    /// <param name="value">value to unwrap</param>
+    /// <param name="cancellationToken">cancellation token to observe</param>
+    /// <returns>inner value if Promise the value itself otherwise</returns>
+    public static JsValue UnwrapIfPromise(this JsValue value, CancellationToken cancellationToken)
+        => UnwrapIfPromiseCore(value, Timeout.InfiniteTimeSpan, cancellationToken);
+
+    private static JsValue UnwrapIfPromiseCore(JsValue value, TimeSpan timeout, CancellationToken cancellationToken)
     {
         if (value is JsPromise promise)
         {
             var engine = promise.Engine;
             var completedEvent = promise.CompletedEvent;
-            engine.RunAvailableContinuations();
-            completedEvent.Wait();
-            switch (promise.State)
+            var eventLoop = engine.EventLoop;
+
+            // Mark this thread as the one waiting on the promise. This prevents
+            // background threads (from Task completions) from executing JavaScript
+            // continuations - only this waiting thread is allowed to process them.
+            var previousWaitingThreadId = eventLoop._waitingThreadId;
+            eventLoop._waitingThreadId = System.Environment.CurrentManagedThreadId;
+
+            try
             {
-                case PromiseState.Pending:
-                    ExceptionHelper.ThrowInvalidOperationException("'UnwrapIfPromise' called before Promise was settled");
-                    return null;
-                case PromiseState.Fulfilled:
-                    return promise.Value;
-                case PromiseState.Rejected:
-                    ExceptionHelper.ThrowPromiseRejectedException(promise.Value);
-                    return null;
-                default:
-                    ExceptionHelper.ThrowArgumentOutOfRangeException();
-                    return null;
+                // Process continuations and poll with short intervals to handle
+                // continuations added by background tasks (like setTimeout callbacks)
+                var hasTimeout = timeout > TimeSpan.Zero;
+                var deadline = hasTimeout ? DateTime.UtcNow + timeout : DateTime.MaxValue;
+                var pollInterval = TimeSpan.FromMilliseconds(10);
+
+                while (promise.State == PromiseState.Pending)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    engine.RunAvailableContinuations();
+
+                    if (promise.State != PromiseState.Pending)
+                    {
+                        break;
+                    }
+
+                    if (hasTimeout)
+                    {
+                        var remaining = deadline - DateTime.UtcNow;
+                        if (remaining <= TimeSpan.Zero)
+                        {
+                            Throw.PromiseRejectedException($"Timeout of {timeout} reached");
+                        }
+
+                        var waitTime = remaining < pollInterval ? remaining : pollInterval;
+                        completedEvent.Wait(waitTime, cancellationToken);
+                    }
+                    else
+                    {
+                        // No timeout - just poll
+                        completedEvent.Wait(pollInterval, cancellationToken);
+                    }
+                }
+
+                switch (promise.State)
+                {
+                    case PromiseState.Pending:
+                        Throw.InvalidOperationException("'UnwrapIfPromise' called before Promise was settled");
+                        return null;
+                    case PromiseState.Fulfilled:
+                        return promise.Value;
+                    case PromiseState.Rejected:
+                        Throw.PromiseRejectedException(promise.Value);
+                        return null;
+                    default:
+                        Throw.ArgumentOutOfRangeException();
+                        return null;
+                }
+            }
+            finally
+            {
+                eventLoop._waitingThreadId = previousWaitingThreadId;
             }
         }
 
@@ -675,7 +756,7 @@ public static class JsValueExtensions
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void ThrowWrongTypeException(JsValue value, string expectedType)
     {
-        ExceptionHelper.ThrowArgumentException($"Expected {expectedType} but got {value._type}");
+        Throw.ArgumentException($"Expected {expectedType} but got {value._type}");
     }
 
     internal static BigInteger ToBigInteger(this JsValue value, Engine engine)
@@ -686,7 +767,7 @@ public static class JsValueExtensions
         }
         catch (ParseErrorException ex)
         {
-            ExceptionHelper.ThrowSyntaxError(engine.Realm, ex.Message);
+            Throw.SyntaxError(engine.Realm, ex.Message);
             return default;
         }
     }
@@ -698,7 +779,7 @@ public static class JsValueExtensions
             return callable;
         }
 
-        ExceptionHelper.ThrowTypeError(realm, "Argument must be callable");
+        Throw.TypeError(realm, "Argument must be callable");
         return null;
     }
 
@@ -719,5 +800,13 @@ public static class JsValueExtensions
         }
 
         return TypeConverter.ToIndex(oi.Engine.Realm, maxByteLength);
+    }
+
+    /// <summary>
+    /// https://tc39.es/ecma262/#sec-canonicalize-keyed-collection-key
+    /// </summary>
+    internal static JsValue CanonicalizeKeyedCollectionKey(this JsValue key)
+    {
+        return key is JsNumber number && number.IsNegativeZero() ? JsNumber.PositiveZero : key;
     }
 }
