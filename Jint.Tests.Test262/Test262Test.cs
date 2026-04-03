@@ -1,8 +1,9 @@
 #nullable enable
 
 using Jint.Native;
+using Jint.Native.Error;
+using Jint.Native.Object;
 using Jint.Runtime;
-using Jint.Runtime.Descriptors;
 using Jint.Runtime.Interop;
 using Test262Harness;
 
@@ -14,16 +15,30 @@ public abstract partial class Test262Test
     [ThreadStatic]
     private static Test262AgentManager? _currentAgentManager;
 
+    // Thread-local storage for async test result (tests run in parallel)
+    [ThreadStatic]
+    private static string? _asyncResult;
+
     private static Engine BuildTestExecutor(Test262File file, Test262AgentManager? agentManager)
     {
+        // Reset async result tracking
+        _asyncResult = null;
+
         var engine = new Engine(cfg =>
         {
             var relativePath = Path.GetDirectoryName(file.FileName) ?? "";
             cfg.EnableModules(new Test262ModuleLoader(State.Test262Stream.Options.FileSystem, relativePath));
             cfg.ExperimentalFeatures = ExperimentalFeature.All;
             cfg.TimeoutInterval(TimeSpan.FromSeconds(30));
+            // Configure agent blocking based on test flags
+            if (file.Flags.Contains("CanBlockIsFalse"))
+            {
+                cfg.AgentCanSuspend = false;
+            }
             // Use ICU-based CLDR provider for better Intl support
             cfg.Intl.CldrProvider = IcuCldrProvider.Instance;
+            // Use NodaTime for accurate IANA timezone support (sub-minute offsets, historical DST)
+            cfg.Temporal.TimeZoneProvider = NodaTimeZoneProvider.Instance;
         });
 
         if (file.Flags.Contains("raw"))
@@ -35,7 +50,20 @@ public abstract partial class Test262Test
         engine.Execute(State.Sources["assert.js"]);
         engine.Execute(State.Sources["sta.js"]);
 
-        engine.SetValue("print", new ClrFunction(engine, "print", (_, args) => TypeConverter.ToString(args.At(0))));
+        engine.SetValue("print", new ClrFunction(engine, "print", (_, args) =>
+        {
+            var message = TypeConverter.ToString(args.At(0));
+            // Capture Test262 async test markers from $DONE via doneprintHandle.js
+            if (message.StartsWith("Test262:AsyncTest", StringComparison.Ordinal))
+            {
+                // AsyncTestFailure takes priority - once recorded, never overwrite with AsyncTestComplete
+                if (_asyncResult is null || !_asyncResult.StartsWith("Test262:AsyncTestFailure:", StringComparison.Ordinal))
+                {
+                    _asyncResult = message;
+                }
+            }
+            return message;
+        }));
 
         // Provide a basic setTimeout for async tests that need it
         engine.SetValue("setTimeout", new ClrFunction(engine, "setTimeout", (thisObj, args) =>
@@ -58,51 +86,10 @@ public abstract partial class Test262Test
             return JsValue.Undefined;
         }));
 
-        var o = engine.Realm.Intrinsics.Object.Construct(Arguments.Empty);
-        o.FastSetProperty("evalScript", new PropertyDescriptor(new ClrFunction(engine, "evalScript",
-            (_, args) =>
-            {
-                if (args.Length > 1)
-                {
-                    throw new Exception("only script parsing supported");
-                }
-
-                var script = Engine.PrepareScript(args.At(0).AsString(), options: new ScriptPreparationOptions
-                {
-                    ParsingOptions = ScriptParsingOptions.Default with { Tolerant = false },
-                });
-
-                return engine.Evaluate(script);
-            }), true, true, true));
-
-        o.FastSetProperty("createRealm", new PropertyDescriptor(new ClrFunction(engine, "createRealm",
-            (_, args) =>
-            {
-                var realm = engine._host.CreateRealm();
-                realm.GlobalObject.Set("global", realm.GlobalObject);
-                return realm.GlobalObject;
-            }), true, true, true));
-
-        o.FastSetProperty("detachArrayBuffer", new PropertyDescriptor(new ClrFunction(engine, "detachArrayBuffer",
-            (_, args) =>
-            {
-                var buffer = (JsArrayBuffer) args.At(0);
-                buffer.DetachArrayBuffer();
-                return JsValue.Undefined;
-            }), true, true, true));
-
-        o.FastSetProperty("gc", new PropertyDescriptor(new ClrFunction(engine, "gc",
-            (_, _) =>
-            {
-                GC.Collect();
-                GC.WaitForPendingFinalizers();
-                return JsValue.Undefined;
-            }), true, true, true));
+        var o = Test262Object.Install(engine);
 
         // Install agent support if needed
         agentManager?.InstallAgent(engine, o);
-
-        engine.SetValue("$262", o);
 
         foreach (var include in file.Includes)
         {
@@ -159,16 +146,165 @@ public abstract partial class Test262Test
             {
                 var script = Engine.PrepareScript(file.Program, source: file.FileName, options: new ScriptPreparationOptions
                 {
-                    ParsingOptions = ScriptParsingOptions.Default with { Tolerant = false },
+                    ParsingOptions = ScriptParsingOptions.Default with { Tolerant = false, AllowReturnOutsideFunction = false },
                 });
 
                 engine.Execute(script);
             }
+
+            // For async tests, drain the event loop and validate completion markers
+            if (file.Flags.Contains("async"))
+            {
+                WaitForAsyncTestCompletion(engine);
+            }
+        }
+        catch (Exception ex) when (file.NegativeTestCase is not null)
+        {
+            ValidateNegativeTestError(file, ex);
+            throw; // Re-throw so the outer RunTestCode handler sees the exception as expected
         }
         finally
         {
             // Cleanup agent manager after test execution
             CleanupAgentManager();
+        }
+    }
+
+    /// <summary>
+    /// Validates that the caught exception matches the expected error type for negative tests.
+    /// Uses Assert.Fail to record test failure if the error type doesn't match; this is recorded
+    /// in the NUnit test context even if the outer catch in RunTestCode swallows the exception.
+    /// </summary>
+    private static void ValidateNegativeTestError(Test262File file, Exception ex)
+    {
+        var expected = file.NegativeTestCase!.Type;
+        var actual = GetActualErrorType(ex);
+
+        // null means infrastructure exception (TimeoutException, etc.) - skip validation
+        if (actual is not null && actual.Value != expected)
+        {
+            Assert.Fail($"Expected {expected} but got {actual.Value}: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Maps a Jint exception to a Test262 ExpectedErrorType.
+    /// Returns null only for truly unknown/infrastructure exceptions (TimeoutException, etc.)
+    /// where we can't determine the JS error type and should not fail the validation.
+    /// </summary>
+    private static ExpectedErrorType? GetActualErrorType(Exception ex)
+    {
+        switch (ex)
+        {
+            case ScriptPreparationException:
+                return ExpectedErrorType.SyntaxError;
+
+            case JavaScriptException jsEx:
+                return GetErrorTypeFromJsError(jsEx.Error);
+
+            // Internal Jint exceptions that bypass JavaScriptException
+            case Jint.Runtime.SyntaxErrorException:
+                return ExpectedErrorType.SyntaxError;
+
+            // Acornima parser SyntaxErrorException (e.g. from module resolution)
+            case Acornima.SyntaxErrorException:
+                return ExpectedErrorType.SyntaxError;
+
+            case TypeErrorException:
+                return ExpectedErrorType.TypeError;
+
+            case RangeErrorException:
+                return ExpectedErrorType.RangeError;
+
+            default:
+                // Infrastructure exceptions (TimeoutException, etc.) - don't validate
+                return null;
+        }
+    }
+
+    /// <summary>
+    /// Determines the error type from a JavaScript error value by checking the "name" property.
+    /// For non-object errors (e.g., thrown strings from $DONOTEVALUATE), returns Test262Error
+    /// since a non-typed throw should not match any specific expected error type.
+    /// </summary>
+    private static ExpectedErrorType? GetErrorTypeFromJsError(JsValue error)
+    {
+        if (error is not ObjectInstance oi)
+        {
+            // Non-object throw (e.g., `throw "string"`) - treat as Test262Error
+            // so it won't match SyntaxError/TypeError/etc. expectations
+            return ExpectedErrorType.Test262Error;
+        }
+
+        var name = oi.Get("name");
+        if (name.IsUndefined() || name.IsNull())
+        {
+            return ExpectedErrorType.Test262Error;
+        }
+
+        return name.ToString() switch
+        {
+            "SyntaxError" => ExpectedErrorType.SyntaxError,
+            "TypeError" => ExpectedErrorType.TypeError,
+            "ReferenceError" => ExpectedErrorType.ReferenceError,
+            "RangeError" => ExpectedErrorType.RangeError,
+            "EvalError" => ExpectedErrorType.EvalError,
+            "URIError" => ExpectedErrorType.URIError,
+            "Test262Error" => ExpectedErrorType.Test262Error,
+            _ => ExpectedErrorType.Test262Error
+        };
+    }
+
+    /// <summary>
+    /// Drains the event loop until $DONE is called (producing Test262:AsyncTestComplete or
+    /// Test262:AsyncTestFailure marker via print), then validates the result.
+    /// See https://github.com/nicolo-ribaudo/tc39-proposal-test262-spec/blob/main/spec.md
+    /// </summary>
+    private static void WaitForAsyncTestCompletion(Engine engine)
+    {
+        if (_asyncResult is null)
+        {
+            var eventLoop = engine.EventLoop;
+            var previousWaitingThreadId = eventLoop._waitingThreadId;
+            eventLoop._waitingThreadId = Environment.CurrentManagedThreadId;
+
+            try
+            {
+                var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(30);
+
+                while (_asyncResult is null)
+                {
+                    engine.RunAvailableContinuations();
+
+                    if (_asyncResult is not null)
+                    {
+                        break;
+                    }
+
+                    if (DateTime.UtcNow >= deadline)
+                    {
+                        throw new TimeoutException("Async test did not complete - $DONE was not called");
+                    }
+
+                    // Poll with short interval for callbacks arriving from setTimeout/promise resolution
+                    Thread.Sleep(10);
+                }
+            }
+            finally
+            {
+                eventLoop._waitingThreadId = previousWaitingThreadId;
+            }
+        }
+
+        // Validate the async test result
+        if (_asyncResult!.StartsWith("Test262:AsyncTestFailure:", StringComparison.Ordinal))
+        {
+            throw new Exception(_asyncResult["Test262:AsyncTestFailure:".Length..]);
+        }
+
+        if (_asyncResult != "Test262:AsyncTestComplete")
+        {
+            throw new Exception($"Unexpected async test result: {_asyncResult}");
         }
     }
 

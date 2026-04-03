@@ -1,35 +1,38 @@
+using System.Threading;
+using Jint.Native;
+using Jint.Native.Promise;
+using Jint.Runtime.Descriptors;
 using Jint.Runtime.Environments;
+using Jint.Runtime.Interop;
+using Jint.Runtime.Interpreter.Expressions;
 using Environment = Jint.Runtime.Environments.Environment;
 
 namespace Jint.Runtime.Interpreter.Statements;
 
 internal sealed class JintBlockStatement : JintStatement<NestedBlockStatement>
 {
-    private JintStatementList? _statementList;
-    private JintStatement? _singleStatement;
-    private DeclarationCache _lexicalDeclarations;
+    private readonly JintStatementList? _statementList;
+    private readonly JintStatement? _singleStatement;
+    private readonly BlockState _blockState;
 
     public JintBlockStatement(NestedBlockStatement blockStatement) : base(blockStatement)
     {
-    }
+        _blockState = (BlockState) (blockStatement.UserData ??= BuildState(blockStatement));
 
-    protected override void Initialize(EvaluationContext context)
-    {
-        _lexicalDeclarations = (DeclarationCache) (_statement.UserData ??= BuildState(_statement));
-
-        if (_statement.Body.Count == 1)
+        if (blockStatement.Body.Count == 1)
         {
-            _singleStatement = Build(_statement.Body[0]);
+            _singleStatement = Build(blockStatement.Body[0]);
         }
         else
         {
-            _statementList = new JintStatementList(_statement, _statement.Body);
+            _statementList = new JintStatementList(blockStatement, blockStatement.Body);
         }
     }
 
-    internal static DeclarationCache BuildState(BlockStatement blockStatement)
+    internal static BlockState BuildState(BlockStatement blockStatement)
     {
-        return DeclarationCacheBuilder.Build(blockStatement);
+        var declarations = DeclarationCacheBuilder.Build(blockStatement);
+        return new BlockState(declarations, blockStatement);
     }
 
     /// <summary>
@@ -37,16 +40,12 @@ internal sealed class JintBlockStatement : JintStatement<NestedBlockStatement>
     /// </summary>
     public Completion ExecuteBlock(EvaluationContext context)
     {
-        if (_statementList is null && _singleStatement is null)
-        {
-            Initialize(context);
-        }
-
         DeclarativeEnvironment? blockEnv = null;
         Environment? oldEnv = null;
         var engine = context.Engine;
         var suspendable = engine.ExecutionContext.Suspendable;
-        if (_lexicalDeclarations.Declarations.Count > 0)
+        var blockState = _blockState;
+        if (blockState.Declarations.Count > 0)
         {
             if (suspendable is { IsResuming: true }
                 && suspendable.Data.TryGet(this, out BlockSuspendData? suspendData)
@@ -70,13 +69,55 @@ internal sealed class JintBlockStatement : JintStatement<NestedBlockStatement>
             else
             {
                 oldEnv = engine.ExecutionContext.LexicalEnvironment;
-                blockEnv = JintEnvironment.NewDeclarativeEnvironment(engine, engine.ExecutionContext.LexicalEnvironment);
-                JintStatementList.BlockDeclarationInstantiation(blockEnv, _lexicalDeclarations);
+
+                if (blockState.SlotNames is not null)
+                {
+                    // Try to reuse cached environment (only valid for same Engine)
+                    var cachedEnv = Interlocked.Exchange(ref blockState._cachedEnv, null);
+
+                    if (cachedEnv is not null && ReferenceEquals(cachedEnv._engine, engine))
+                    {
+                        // Reuse environment: update outer reference and reset slots
+                        cachedEnv._outerEnv = oldEnv;
+                        blockState.SlotTemplates.AsSpan().CopyTo(cachedEnv._slots);
+                        blockEnv = cachedEnv;
+                    }
+                    else
+                    {
+                        // Create new environment with fixed-slot storage
+                        blockEnv = JintEnvironment.NewDeclarativeEnvironment(engine, oldEnv);
+                        blockEnv._slotNames = blockState.SlotNames;
+                        blockEnv._slots = (Binding[]) blockState.SlotTemplates!.Clone();
+                    }
+                }
+                else
+                {
+                    blockEnv = JintEnvironment.NewDeclarativeEnvironment(engine, oldEnv);
+                    JintStatementList.BlockDeclarationInstantiation(blockEnv, blockState.DeclarationCache);
+                }
+
                 engine.UpdateLexicalEnvironment(blockEnv);
             }
         }
 
         Completion blockValue;
+
+        // If resuming from a disposal-caused suspension (await-using with null/undefined),
+        // skip re-executing the body — the block body already completed, we're just
+        // resuming after the implicit Await tick from DisposeResources.
+        if (suspendable is { IsResuming: true }
+            && suspendable.Data.TryGet(this, out BlockSuspendData? disposeResumeData)
+            && disposeResumeData?.DisposalComplete == true)
+        {
+            suspendable.IsResuming = false;
+            suspendable.Data.Clear(this);
+            if (oldEnv is not null)
+            {
+                engine.UpdateLexicalEnvironment(oldEnv);
+            }
+            return new Completion(CompletionType.Normal, JsValue.Undefined, _statement);
+        }
+
         if (_singleStatement is not null)
         {
             blockValue = ExecuteSingle(context);
@@ -99,7 +140,52 @@ internal sealed class JintBlockStatement : JintStatement<NestedBlockStatement>
             }
             else
             {
+                // Return environment to cache for reuse (slots only exist when CanReuseEnvironment=true)
+                if (blockEnv._slots is not null)
+                {
+                    Interlocked.Exchange(ref blockState._cachedEnv, blockEnv);
+                }
+
                 blockValue = blockEnv.DisposeResources(blockValue);
+
+                // Per spec Dispose step 3.a: await-using with null/undefined value requires
+                // an implicit Await tick. Suspend the async function to introduce the tick.
+                if (blockEnv.NeedsAsyncDisposeTick)
+                {
+                    var asyncFn = engine.ExecutionContext.AsyncFunction;
+                    if (asyncFn is not null)
+                    {
+                        var promise = (JsPromise) engine.Realm.Intrinsics.Promise.PromiseResolve(JsValue.Undefined);
+
+                        asyncFn._lastAwaitNode = this;
+                        asyncFn._state = Native.AsyncFunction.AsyncFunctionState.SuspendedAwait;
+                        asyncFn._savedContext = engine.ExecutionContext;
+
+                        var onFulfilled = new ClrFunction(engine, "", (_, args) =>
+                        {
+                            asyncFn._resumeValue = JsValue.Undefined;
+                            asyncFn._resumeWithThrow = false;
+                            JintAwaitExpression.AsyncFunctionResume(engine, asyncFn);
+                            return JsValue.Undefined;
+                        }, 1, PropertyFlag.Configurable);
+
+                        PromiseOperations.PerformPromiseThen(engine, promise, onFulfilled, null!, null!);
+
+                        if (suspendable is not null)
+                        {
+                            var data = suspendable.Data.GetOrCreate<BlockSuspendData>(this);
+                            data.BlockEnvironment = blockEnv;
+                            data.OuterEnvironment = oldEnv;
+                            data.DisposalComplete = true;
+                        }
+                        if (oldEnv is not null)
+                        {
+                            engine.UpdateLexicalEnvironment(oldEnv);
+                        }
+                        return blockValue;
+                    }
+                }
+
                 suspendable?.Data.Clear(this);
             }
         }
@@ -156,5 +242,71 @@ internal sealed class JintBlockStatement : JintStatement<NestedBlockStatement>
     protected override Completion ExecuteInternal(EvaluationContext context)
     {
         return ExecuteBlock(context);
+    }
+
+    /// <summary>
+    /// Pre-computed block scope state, cached on AST node UserData.
+    /// </summary>
+    internal sealed class BlockState
+    {
+        public readonly DeclarationCache DeclarationCache;
+        public readonly List<ScopedDeclaration> Declarations;
+
+        // Fixed-slot storage for qualifying block scopes (no function/class declarations, 1-16 bindings)
+        public readonly Key[]? SlotNames;
+        public readonly Binding[]? SlotTemplates;
+
+        /// <summary>
+        /// True when the block has slots and no closures capture the block's bindings,
+        /// meaning the DeclarativeEnvironment object itself can be reused across iterations.
+        /// </summary>
+        public readonly bool CanReuseEnvironment;
+
+        // Cached environment for reuse (thread-safe via Interlocked.Exchange)
+        public DeclarativeEnvironment? _cachedEnv;
+
+        public BlockState(DeclarationCache declarationCache, BlockStatement blockStatement)
+        {
+            DeclarationCache = declarationCache;
+            Declarations = declarationCache.Declarations;
+
+            // Determine slot eligibility: no function/class declarations, all variable declarations, 1-16 bindings
+            if (declarationCache.AllLexicalScoped && declarationCache.Declarations.Count > 0)
+            {
+                var totalBindings = 0;
+                var eligible = true;
+                foreach (var decl in declarationCache.Declarations)
+                {
+                    if (decl.Declaration is not VariableDeclaration)
+                    {
+                        eligible = false;
+                        break;
+                    }
+                    totalBindings += decl.BoundNames.Length;
+                }
+
+                if (eligible && totalBindings is > 0 and <= 16
+                    && !JintFunctionDefinition.EnvironmentEscapeAstVisitor.MayEscape(blockStatement))
+                {
+                    var slotNames = new Key[totalBindings];
+                    var slotTemplates = new Binding[totalBindings];
+                    var idx = 0;
+                    foreach (var decl in declarationCache.Declarations)
+                    {
+                        foreach (var bn in decl.BoundNames)
+                        {
+                            slotNames[idx] = bn;
+                            slotTemplates[idx] = decl.IsConstantDeclaration
+                                ? new Binding(null!, canBeDeleted: false, mutable: false, strict: true)
+                                : new Binding(null!, canBeDeleted: false, mutable: true, strict: false);
+                            idx++;
+                        }
+                    }
+                    SlotNames = slotNames;
+                    SlotTemplates = slotTemplates;
+                    CanReuseEnvironment = true;
+                }
+            }
+        }
     }
 }

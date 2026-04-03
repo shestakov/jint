@@ -18,7 +18,7 @@ var b = a.user.name;
 
         var engine = new Engine();
         var e = Assert.Throws<JavaScriptException>(() => engine.Execute(script));
-        Assert.Equal("Cannot read property 'name' of undefined", e.Message);
+        Assert.Equal("Cannot read properties of undefined (reading 'name')", e.Message);
         Assert.Equal(4, e.Location.Start.Line);
         Assert.Equal(15, e.Location.Start.Column);
     }
@@ -34,7 +34,7 @@ var c = a(b().Length);
         engine.SetValue("a", new Action<string>((_) => { }));
         engine.SetValue("b", new Func<string>(() => null));
         var e = Assert.Throws<JavaScriptException>(() => engine.Execute(script));
-        Assert.Equal("Cannot read property 'Length' of null", e.Message);
+        Assert.Equal("Cannot read properties of null (reading 'Length')", e.Message);
         Assert.Equal(2, e.Location.Start.Line);
         Assert.Equal(14, e.Location.Start.Column);
     }
@@ -69,7 +69,7 @@ var b = function(v) {
             ", "custom.js");
 
         var e = Assert.Throws<JavaScriptException>(() => engine.Execute("var x = b(7);", "main.js"));
-        Assert.Equal("Cannot read property 'yyy' of undefined", e.Message);
+        Assert.Equal("Cannot read properties of undefined (reading 'yyy')", e.Message);
         Assert.Equal(3, e.Location.Start.Line);
         Assert.Equal(15, e.Location.Start.Column);
         Assert.Equal("custom.js", e.Location.SourceFile);
@@ -236,7 +236,7 @@ var b = function(v) {
                 Test.recursive(folder);"
             ));
 
-        Assert.Equal("Cannot read property 'Name' of null", javaScriptException.Message);
+        Assert.Equal("Cannot read properties of null (reading 'Name')", javaScriptException.Message);
         EqualIgnoringNewLineDifferences(@"    at recursive (<anonymous>:6:44)
     at recursive (<anonymous>:8:32)
     at recursive (<anonymous>:8:32)
@@ -266,7 +266,7 @@ var x = b(7);";
 
         var ex = Assert.Throws<JavaScriptException>(() => engine.Execute(script));
 
-        const string expected = @"Error: Cannot read property 'yyy' of undefined
+        const string expected = @"Error: Cannot read properties of undefined (reading 'yyy')
     at a (<anonymous>:2:18)
     at b (<anonymous>:6:12)
     at <anonymous>:9:9";
@@ -301,7 +301,7 @@ var x = b(7);";
         };
         var ex = Assert.Throws<JavaScriptException>(() => engine.Execute(script, "get-item.js", parsingOptions));
 
-        const string expected = @"Error: Cannot read property '5' of null
+        const string expected = @"Error: Cannot read properties of null (reading '5')
     at getItem (get-item.js:2:22)
     at (anonymous) (get-item.js:9:16)
     at get-item.js:13:2";
@@ -473,6 +473,86 @@ throw_error();
         var ex= Assert.Throws<JavaScriptException>(() => engine.Modules.Import("my_module"));
         Assert.Equal(ex.Location.Start.Line, 3);
         Assert.Equal(ex.Location.Start.Column, 10);
+    }
+
+    [Fact]
+    public void ShouldApplySourceOffsetToErrorLocation()
+    {
+        var parsingOptions = ScriptParsingOptions.Default with
+        {
+            SourceOffset = Position.From(234, 36)
+        };
+
+        var e = Assert.Throws<JavaScriptException>(() =>
+        {
+            var engine = new Engine();
+            engine.Execute("undeclaredVariable.property", "mapping-spec.json", parsingOptions);
+        });
+
+        Assert.Equal(234, e.Location.Start.Line);
+        Assert.Equal("mapping-spec.json", e.Location.SourceFile);
+    }
+
+    [Fact]
+    public void ShouldApplySourceOffsetToStackTrace()
+    {
+        var parsingOptions = ScriptParsingOptions.Default with
+        {
+            SourceOffset = Position.From(10, 5)
+        };
+
+        var e = Assert.Throws<JavaScriptException>(() =>
+        {
+            var engine = new Engine();
+            engine.Execute("throw new Error('test error');", "test.json", parsingOptions);
+        });
+
+        Assert.Equal(10, e.Location.Start.Line);
+        Assert.Equal(11, e.Location.Start.Column); // 5 (column offset) + 6 (position of 'new Error' after 'throw ')
+        Assert.Equal("test.json", e.Location.SourceFile);
+        ContainsIgnoringNewLineDifferences("test.json:10:", e.JavaScriptStackTrace!);
+    }
+
+    [Fact]
+    public void ShouldApplySourceOffsetWithEvaluate()
+    {
+        var parsingOptions = ScriptParsingOptions.Default with
+        {
+            SourceOffset = Position.From(100, 0)
+        };
+
+        var e = Assert.Throws<JavaScriptException>(() =>
+        {
+            var engine = new Engine();
+            engine.Evaluate("undeclaredVariable.property", "test.json", parsingOptions);
+        });
+
+        Assert.Equal(100, e.Location.Start.Line);
+        Assert.Equal("test.json", e.Location.SourceFile);
+    }
+
+    [Fact]
+    public void ShouldApplySourceOffsetWithPreparedScript()
+    {
+        var preparedScript = Engine.PrepareScript(
+            "undeclaredVariable.property",
+            source: "mapping-spec.json",
+            options: new ScriptPreparationOptions
+            {
+                ParsingOptions = ScriptParsingOptions.Default with
+                {
+                    SourceOffset = Position.From(50, 10)
+                }
+            });
+
+        var e = Assert.Throws<JavaScriptException>(() =>
+        {
+            var engine = new Engine();
+            engine.Execute(preparedScript);
+        });
+
+        Assert.Equal(50, e.Location.Start.Line);
+        Assert.Equal("mapping-spec.json", e.Location.SourceFile);
     }
 
     private static void EqualIgnoringNewLineDifferences(string expected, string actual)

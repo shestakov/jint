@@ -19,6 +19,9 @@ public static class TypeConverter
     private static readonly string[] intToString = new string[1024];
     private static readonly string[] charToString = new string[256];
 
+    private static readonly BigInteger s_bigInt2Pow64 = BigInteger.Pow(2, 64);
+    private static readonly BigInteger s_bigInt2Pow63 = BigInteger.Pow(2, 63);
+
     static TypeConverter()
     {
         for (var i = 0; i < intToString.Length; ++i)
@@ -130,6 +133,13 @@ public static class TypeConverter
         if (value.IsNumber() || value.IsBigInt())
         {
             return value;
+        }
+
+        // fast path for Date objects - avoid expensive ToPrimitive chain
+        // (Symbol.toPrimitive lookup → exotic call → OrdinaryToPrimitive → valueOf)
+        if (value is JsDate jsDate)
+        {
+            return jsDate._dateValue.ToJsValue();
         }
 
         var primValue = ToPrimitive(value, Types.Number);
@@ -613,8 +623,7 @@ public static class TypeConverter
     {
         if (!TryStringToBigInt(str, out var result))
         {
-            // TODO: this doesn't seem a JS syntax error, use a dedicated exception type?
-            throw new SyntaxError("CannotConvertToBigInt", " Cannot convert " + str + " to a BigInt").ToException();
+            Throw.SyntaxErrorNoEngine("Cannot convert " + str + " to a BigInt");
         }
 
         return result;
@@ -736,10 +745,10 @@ public static class TypeConverter
     /// </summary>
     internal static long ToBigInt64(BigInteger value)
     {
-        var int64bit = BigIntegerModulo(value, BigInteger.Pow(2, 64));
-        if (int64bit >= BigInteger.Pow(2, 63))
+        var int64bit = BigIntegerModulo(value, s_bigInt2Pow64);
+        if (int64bit >= s_bigInt2Pow63)
         {
-            return (long) (int64bit - BigInteger.Pow(2, 64));
+            return (long) (int64bit - s_bigInt2Pow64);
         }
 
         return (long) int64bit;
@@ -750,7 +759,7 @@ public static class TypeConverter
     /// </summary>
     internal static ulong ToBigUint64(BigInteger value)
     {
-        return (ulong) BigIntegerModulo(value, BigInteger.Pow(2, 64));
+        return (ulong) BigIntegerModulo(value, s_bigInt2Pow64);
     }
 
     /// <summary>
@@ -803,7 +812,7 @@ public static class TypeConverter
         var integerIndex = ToIntegerOrInfinity(value);
         if (integerIndex < 0)
         {
-            Throw.RangeError(realm);
+            Throw.RangeError(realm, "Invalid index");
         }
 
         var index = ToLength(integerIndex);
@@ -1027,7 +1036,7 @@ public static class TypeConverter
         string? referencedName)
     {
         referencedName ??= "unknown";
-        var message = $"Cannot read property '{referencedName}' of {o}";
+        var message = $"Cannot read properties of {o} (reading '{referencedName}')";
         throw new JavaScriptException(engine.Realm.Intrinsics.TypeError, message)
             .SetJavaScriptCallstack(engine, sourceNode.Location, overwriteExisting: true);
     }

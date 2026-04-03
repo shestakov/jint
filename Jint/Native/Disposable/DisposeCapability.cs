@@ -7,6 +7,12 @@ internal sealed class DisposeCapability
     private readonly Engine _engine;
     private readonly List<DisposableResource> _disposableResourceStack = [];
 
+    /// <summary>
+    /// Set to true after DisposeResources if an async-dispose resource with no method
+    /// was encountered, indicating the caller should introduce an Await tick per spec.
+    /// </summary>
+    public bool NeedsAsyncTick { get; private set; }
+
     public DisposeCapability(Engine engine)
     {
         _engine = engine;
@@ -89,6 +95,10 @@ internal sealed class DisposeCapability
                         {
                             result = result.UnwrapIfPromise(_engine.Options.Constraints.PromiseTimeout);
                         }
+                        catch (PromiseRejectedException e)
+                        {
+                            exception = new JavaScriptException(e.RejectedValue);
+                        }
                         catch (JavaScriptException e)
                         {
                             exception = e;
@@ -122,6 +132,7 @@ internal sealed class DisposeCapability
 
         if (needsAwait && !hasAwaited)
         {
+            NeedsAsyncTick = true;
             _engine.RunAvailableContinuations();
         }
 

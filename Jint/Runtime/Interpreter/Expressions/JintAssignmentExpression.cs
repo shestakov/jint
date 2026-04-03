@@ -62,7 +62,7 @@ internal sealed class JintAssignmentExpression : JintExpression
             lref = (_left.Evaluate(context) as Reference)!;
             if (lref is null)
             {
-                Throw.ReferenceError(context.Engine.Realm, "not a valid reference");
+                Throw.ReferenceError(context.Engine.Realm, "Invalid left-hand side in assignment");
             }
             originalLeftValue = context.Engine.GetValue(lref, returnReferenceToPool: false);
         }
@@ -355,11 +355,20 @@ internal sealed class JintAssignmentExpression : JintExpression
                         else
                         {
                             var exponent = TypeConverter.ToBigInt(rval);
-                            if (exponent > int.MaxValue || exponent < int.MinValue)
+                            if (exponent < 0)
                             {
-                                Throw.TypeError(context.Engine.Realm, "Cannot do exponentiation with exponent not fitting int32");
+                                Throw.RangeError(context.Engine.Realm, "Exponent must be positive");
                             }
-                            newLeftValue = JsBigInt.Create(BigInteger.Pow(TypeConverter.ToBigInt(originalLeftValue), (int) exponent));
+
+                            if (exponent > int.MaxValue)
+                            {
+                                Throw.RangeError(context.Engine.Realm, "Maximum BigInt size exceeded");
+                            }
+
+                            var intExponent = (int) exponent;
+                            var baseValue = TypeConverter.ToBigInt(originalLeftValue);
+                            JintBinaryExpression.ValidateBigIntPowSize(context.Engine.Realm, baseValue, intExponent);
+                            newLeftValue = JsBigInt.Create(BigInteger.Pow(baseValue, intExponent));
                         }
 
                         break;
@@ -440,13 +449,20 @@ internal sealed class JintAssignmentExpression : JintExpression
 
     private JsValue NamedEvaluation(EvaluationContext context, JintExpression expression)
     {
-        var rval = expression.GetValue(context);
         if (expression._expression.IsAnonymousFunctionDefinition() && _left._expression.Type == NodeType.Identifier)
         {
-            ((Function) rval).SetFunctionName(((Identifier) _left._expression).Name);
+            var name = ((Identifier) _left._expression).Name;
+            if (expression is JintClassExpression classExpression)
+            {
+                return classExpression.EvaluateWithName(context, name);
+            }
+
+            var rval = expression.GetValue(context);
+            ((Function) rval).SetFunctionName(name);
+            return rval;
         }
 
-        return rval;
+        return expression.GetValue(context);
     }
 
     internal sealed class SimpleAssignmentExpression : JintExpression
@@ -496,7 +512,7 @@ internal sealed class JintAssignmentExpression : JintExpression
             var lref = _left.Evaluate(context) as Reference;
             if (lref is null)
             {
-                Throw.ReferenceError(engine.Realm, "not a valid reference");
+                Throw.ReferenceError(engine.Realm, "Invalid left-hand side in assignment");
             }
 
             lref.AssertValid(engine.Realm);
@@ -537,7 +553,16 @@ internal sealed class JintAssignmentExpression : JintExpression
                     Throw.SyntaxError(engine.Realm, "Invalid assignment target");
                 }
 
-                var completion = right.GetValue(context);
+                JsValue completion;
+                if (right is JintClassExpression classExpression && right._expression.IsAnonymousFunctionDefinition())
+                {
+                    completion = classExpression.EvaluateWithName(context, identifier.Value.ToString());
+                }
+                else
+                {
+                    completion = right.GetValue(context);
+                }
+
                 if (context.IsAbrupt())
                 {
                     return completion;
@@ -551,7 +576,7 @@ internal sealed class JintAssignmentExpression : JintExpression
 
                 var rval = completion.Clone();
 
-                if (right._expression.IsFunctionDefinition())
+                if (right._expression.IsFunctionDefinition() && right is not JintClassExpression)
                 {
                     ((Function) rval).SetFunctionName(identifier.Value);
                 }

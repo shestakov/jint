@@ -68,7 +68,7 @@ public static class ModuleFactory
         }
         catch (Exception)
         {
-            Throw.JavaScriptException(engine, $"Could not load module {source}", AstExtensions.DefaultLocation);
+            Throw.SyntaxError(engine.Realm, $"Could not load module {source}");
             module = null;
         }
 
@@ -86,5 +86,22 @@ public static class ModuleFactory
     public static Module BuildJsonModule(Engine engine, JsValue parsedJson, string? location)
     {
         return new SyntheticModule(engine, engine.Realm, parsedJson, location);
+    }
+
+    /// <summary>
+    /// Creates a <see cref="Module"/> for the usage within the given <paramref name="engine"/> for the
+    /// provided bytes module data.
+    /// </summary>
+    /// <remarks>
+    /// https://tc39.es/proposal-import-bytes/#sec-create-bytes-module
+    /// </remarks>
+    public static Module BuildBytesModule(Engine engine, ResolvedSpecifier resolved, byte[] bytes)
+    {
+        var arrayBuffer = engine.Realm.Intrinsics.ArrayBuffer.Construct(bytes);
+        arrayBuffer._isImmutable = true;
+
+        var uint8Array = engine.Realm.Intrinsics.Uint8Array.Construct([arrayBuffer], engine.Realm.Intrinsics.Uint8Array);
+
+        return new SyntheticModule(engine, engine.Realm, uint8Array, resolved.Uri?.LocalPath);
     }
 }

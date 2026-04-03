@@ -55,7 +55,7 @@ internal sealed class NumberPrototype : NumberInstance
     {
         if (!thisObject.IsNumber() && thisObject is not NumberInstance)
         {
-            Throw.TypeError(_realm);
+            Throw.TypeError(_realm, "Number.prototype.toLocaleString requires that 'this' be a Number");
         }
 
         var x = TypeConverter.ToNumber(thisObject);
@@ -80,7 +80,7 @@ internal sealed class NumberPrototype : NumberInstance
             return thisObject;
         }
 
-        Throw.TypeError(_realm);
+        Throw.TypeError(_realm, "Number.prototype.valueOf requires that 'this' be a Number");
         return null;
     }
 
@@ -91,13 +91,7 @@ internal sealed class NumberPrototype : NumberInstance
         var f = (int) TypeConverter.ToInteger(arguments.At(0, 0));
         if (f < 0 || f > 100)
         {
-            Throw.RangeError(_realm, "fractionDigits argument must be between 0 and 100");
-        }
-
-        // limitation with .NET, max is 99
-        if (f == 100)
-        {
-            Throw.RangeError(_realm, "100 fraction digits is not supported due to .NET format specifier limitation");
+            Throw.RangeError(_realm, "toFixed() digits argument must be between 0 and 100");
         }
 
         var x = TypeConverter.ToNumber(thisObject);
@@ -107,18 +101,111 @@ internal sealed class NumberPrototype : NumberInstance
             return "NaN";
         }
 
-        if (x >= Ten21)
+        if (x >= Ten21 || x <= -Ten21)
         {
             return ToNumberString(x);
         }
 
-        // handle non-decimal with greater precision
-        if (System.Math.Abs(x - (long) x) < JsNumber.DoubleIsIntegerTolerance)
+        bool negative = false;
+        if (x < 0)
         {
-            return ((long) x).ToString("f" + f, CultureInfo.InvariantCulture);
+            negative = true;
+            x = -x;
         }
 
-        return x.ToString("f" + f, CultureInfo.InvariantCulture);
+        if (f == 0)
+        {
+            // Fast path: no fractional digits
+            var rounded = System.Math.Round(x, MidpointRounding.AwayFromZero);
+            var result = negative ? "-" + ((long) rounded).ToString(CultureInfo.InvariantCulture) : ((long) rounded).ToString(CultureInfo.InvariantCulture);
+            return result;
+        }
+
+        // Use .NET formatting for f <= 99 (fast path)
+        if (f <= 99)
+        {
+            // handle non-decimal with greater precision
+            if (System.Math.Abs(x - (long) x) < JsNumber.DoubleIsIntegerTolerance)
+            {
+                var result = ((long) x).ToString("f" + f, CultureInfo.InvariantCulture);
+                return negative ? "-" + result : result;
+            }
+
+            var formatted = x.ToString("f" + f, CultureInfo.InvariantCulture);
+            return negative ? "-" + formatted : formatted;
+        }
+
+        // Use Dtoa infrastructure for f == 100 (avoids .NET format specifier limitation)
+        return ToFixedDtoa(x, f, negative);
+    }
+
+    private static string ToFixedDtoa(double x, int fractionDigits, bool negative)
+    {
+        if (x == 0)
+        {
+            var sb = new ValueStringBuilder(stackalloc char[128]);
+            if (negative)
+            {
+                sb.Append('-');
+            }
+            sb.Append("0.");
+            sb.Append('0', fractionDigits);
+            return sb.ToString();
+        }
+
+        var dtoaBuilder = new DtoaBuilder(stackalloc char[fractionDigits + 50]);
+        DtoaNumberFormatter.DoubleToAscii(
+            ref dtoaBuilder,
+            x,
+            DtoaMode.Fixed,
+            fractionDigits,
+            out _,
+            out var decimalPoint);
+
+        var result2 = new ValueStringBuilder(stackalloc char[fractionDigits + 50]);
+        if (negative)
+        {
+            result2.Append('-');
+        }
+
+        if (decimalPoint <= 0)
+        {
+            // 0.000...digits
+            result2.Append("0.");
+            result2.Append('0', -decimalPoint);
+            result2.Append(dtoaBuilder._chars.Slice(0, dtoaBuilder.Length));
+            int remaining = fractionDigits - (-decimalPoint + dtoaBuilder.Length);
+            if (remaining > 0)
+            {
+                result2.Append('0', remaining);
+            }
+        }
+        else if (decimalPoint >= dtoaBuilder.Length)
+        {
+            // Integer part only, pad with zeros
+            result2.Append(dtoaBuilder._chars.Slice(0, dtoaBuilder.Length));
+            result2.Append('0', decimalPoint - dtoaBuilder.Length);
+            if (fractionDigits > 0)
+            {
+                result2.Append('.');
+                result2.Append('0', fractionDigits);
+            }
+        }
+        else
+        {
+            // digits split across integer and fractional part
+            result2.Append(dtoaBuilder._chars.Slice(0, decimalPoint));
+            result2.Append('.');
+            int fracDigitsFromDtoa = dtoaBuilder.Length - decimalPoint;
+            result2.Append(dtoaBuilder._chars.Slice(decimalPoint, fracDigitsFromDtoa));
+            int remaining = fractionDigits - fracDigitsFromDtoa;
+            if (remaining > 0)
+            {
+                result2.Append('0', remaining);
+            }
+        }
+
+        return result2.ToString();
     }
 
     /// <summary>
@@ -128,7 +215,7 @@ internal sealed class NumberPrototype : NumberInstance
     {
         if (!thisObject.IsNumber() && ReferenceEquals(thisObject.TryCast<NumberInstance>(), null))
         {
-            Throw.TypeError(_realm);
+            Throw.TypeError(_realm, "Number.prototype.toExponential requires that 'this' be a Number");
         }
 
         var x = TypeConverter.ToNumber(thisObject);
@@ -152,7 +239,7 @@ internal sealed class NumberPrototype : NumberInstance
 
         if (f < 0 || f > 100)
         {
-            Throw.RangeError(_realm, "fractionDigits argument must be between 0 and 100");
+            Throw.RangeError(_realm, "toExponential() argument must be between 0 and 100");
         }
 
         if (arguments.At(0).IsUndefined())
@@ -204,7 +291,7 @@ internal sealed class NumberPrototype : NumberInstance
     {
         if (!thisObject.IsNumber() && ReferenceEquals(thisObject.TryCast<NumberInstance>(), null))
         {
-            Throw.TypeError(_realm);
+            Throw.TypeError(_realm, "Number.prototype.toPrecision requires that 'this' be a Number");
         }
 
         var x = TypeConverter.ToNumber(thisObject);
@@ -229,7 +316,7 @@ internal sealed class NumberPrototype : NumberInstance
 
         if (p < 1 || p > 100)
         {
-            Throw.RangeError(_realm, "precision must be between 1 and 100");
+            Throw.RangeError(_realm, "toPrecision() argument must be between 1 and 100");
         }
 
         var dtoaBuilder = new DtoaBuilder(stackalloc char[LargeDtoaLength]);
@@ -324,7 +411,7 @@ internal sealed class NumberPrototype : NumberInstance
     {
         if (!thisObject.IsNumber() && (ReferenceEquals(thisObject.TryCast<NumberInstance>(), null)))
         {
-            Throw.TypeError(_realm);
+            Throw.TypeError(_realm, "Number.prototype.toString requires that 'this' be a Number");
         }
 
         var radix = arguments.At(0).IsUndefined()
@@ -333,7 +420,7 @@ internal sealed class NumberPrototype : NumberInstance
 
         if (radix < 2 || radix > 36)
         {
-            Throw.RangeError(_realm, "radix must be between 2 and 36");
+            Throw.RangeError(_realm, "toString() radix argument must be between 2 and 36");
         }
 
         var x = TypeConverter.ToNumber(thisObject);
@@ -377,12 +464,25 @@ internal sealed class NumberPrototype : NumberInstance
 
     internal static string ToBase(long n, int radix)
     {
-        const string Digits = "0123456789abcdefghijklmnopqrstuvwxyz";
         if (n == 0)
         {
             return "0";
         }
 
+        // Cache hex strings for small integers (covers common byte range)
+        if (radix == 16 && n is > 0 and <= 0xFF)
+        {
+            return s_hexCache[n] ??= ToBaseCore(n, radix);
+        }
+
+        return ToBaseCore(n, radix);
+    }
+
+    private static readonly string?[] s_hexCache = new string?[256];
+
+    private static string ToBaseCore(long n, int radix)
+    {
+        const string Digits = "0123456789abcdefghijklmnopqrstuvwxyz";
         var sb = new ValueStringBuilder(stackalloc char[64]);
         while (n > 0)
         {

@@ -129,7 +129,7 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
         var oi = c as ObjectInstance;
         if (oi is null)
         {
-            Throw.TypeError(o._engine.Realm);
+            Throw.TypeError(o._engine.Realm, "Species constructor is not an object");
         }
 
         var s = oi.Get(GlobalSymbolRegistry.Species);
@@ -143,7 +143,7 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
             return (IConstructor) s;
         }
 
-        Throw.TypeError(o._engine.Realm);
+        Throw.TypeError(o._engine.Realm, $"{s} is not a constructor");
         return null;
     }
 
@@ -419,8 +419,13 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
             return Undefined;
         }
 
-        var functionInstance = (Function.Function) getter;
-        return functionInstance._engine.Call(functionInstance, thisObject);
+        if (!getter.IsCallable)
+        {
+            return Undefined;
+        }
+
+        var callable = (ICallable) getter;
+        return ((ObjectInstance) getter)._engine.Call(callable, thisObject, Arguments.Empty, null);
     }
 
     /// <summary>
@@ -487,7 +492,7 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
     {
         if (!Set(p, v) && throwOnError)
         {
-            Throw.TypeError(_engine.Realm);
+            Throw.TypeError(_engine.Realm, $"Cannot assign to read only property '{p}' of object '#<Object>'");
         }
 
         return true;
@@ -689,7 +694,7 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
     {
         if (!Delete(property))
         {
-            Throw.TypeError(_engine.Realm);
+            Throw.TypeError(_engine.Realm, $"Cannot delete property '{property}' of #<Object>");
         }
         return true;
     }
@@ -1360,7 +1365,7 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
     {
         if (!CreateDataProperty(p, v))
         {
-            Throw.TypeError(_engine.Realm);
+            Throw.TypeError(_engine.Realm, $"Cannot define property {p}, object is not extensible");
         }
 
         return true;
@@ -1411,9 +1416,9 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
                             method.Call(this);
                             promiseCapability.Resolve.Call(Undefined, Undefined);
                         }
-                        catch
+                        catch (JavaScriptException e)
                         {
-                            promiseCapability.Reject.Call(Undefined, Undefined);
+                            promiseCapability.Reject.Call(Undefined, e.Error);
                         }
                         return promiseCapability.PromiseInstance;
                     };
@@ -1614,7 +1619,7 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
         var func = v.GetV(_engine.Realm, p);
         if (func is not ICallable callable)
         {
-            Throw.TypeError(_engine.Realm, "Can only invoke functions");
+            Throw.TypeError(_engine.Realm, $"{v}.{p} is not a function");
             return default;
         }
 
@@ -1678,7 +1683,7 @@ public partial class ObjectInstance : JsValue, IEquatable<ObjectInstance>
         var initValue = Undefined;
         if (initializer is not null)
         {
-            initValue = receiver._engine.Call(initializer, receiver);
+            initValue = receiver._engine.Call(initializer, thisObject: receiver, Arguments.Empty);
             if (initValue is Function.Function functionInstance)
             {
                 functionInstance.SetFunctionName(fieldName);

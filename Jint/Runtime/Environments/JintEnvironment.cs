@@ -1,4 +1,5 @@
 ﻿using System.Diagnostics.CodeAnalysis;
+using System.Threading;
 using Jint.Native;
 using Jint.Native.Function;
 using Jint.Native.Object;
@@ -76,10 +77,21 @@ internal static class JintEnvironment
     /// </summary>
     internal static FunctionEnvironment NewFunctionEnvironment(Engine engine, Function f, JsValue newTarget)
     {
-        return new FunctionEnvironment(engine, f, newTarget)
+        var env = new FunctionEnvironment(engine, f, newTarget)
         {
             _outerEnv = f._environment
         };
+
+        var state = f._functionDefinition?.Initialize();
+        if (state is { UseFixedSlots: true })
+        {
+            env._slotNames = state.SlotNames;
+            // Try to reuse cached slots from previous call to same function (thread-safe)
+            var cached = Interlocked.Exchange(ref state._cachedSlots, null);
+            env._slots = cached ?? new Binding[state.SlotNames!.Length];
+        }
+
+        return env;
     }
 
     /// <summary>
