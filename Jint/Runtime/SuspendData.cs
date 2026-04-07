@@ -53,6 +53,13 @@ internal sealed class ForOfSuspendData : SuspendData
     /// The iteration environment for lexical bindings (let/const in for-of).
     /// </summary>
     public DeclarativeEnvironment? IterationEnv { get; set; }
+
+    /// <summary>
+    /// The outer environment of the for-of loop body evaluation.
+    /// Needed because the saved execution context on async resume may have a
+    /// block-scoped environment from let declarations inside the loop body.
+    /// </summary>
+    public Environments.Environment? OuterEnv { get; set; }
 }
 
 /// <summary>
@@ -78,9 +85,21 @@ internal sealed class ForAwaitSuspendData : SuspendData
     public ObjectInstance? ResolvedIteratorResult { get; set; }
 
     /// <summary>
+    /// The rejected value if the iterator's next() Promise was rejected.
+    /// When non-null, the for-await-of loop will throw this value on resume.
+    /// </summary>
+    public JsValue? RejectedValue { get; set; }
+
+    /// <summary>
     /// The accumulated result value (v) from previous iterations.
     /// </summary>
     public JsValue AccumulatedValue { get; set; } = JsValue.Undefined;
+
+    /// <summary>
+    /// The current value being processed when yield fired inside destructuring.
+    /// When set, the resume should skip the iterator step and use this value.
+    /// </summary>
+    public JsValue? CurrentValue { get; set; }
 }
 
 /// <summary>
@@ -97,6 +116,25 @@ internal sealed class BlockSuspendData : SuspendData
     /// The outer environment to restore after the block completes.
     /// </summary>
     public Jint.Runtime.Environments.Environment? OuterEnvironment { get; set; }
+
+    /// <summary>
+    /// Whether DisposeResources has already been called for this block.
+    /// When true, resumption should skip disposal and just continue.
+    /// </summary>
+    public bool DisposalComplete { get; set; }
+}
+
+/// <summary>
+/// Stores the state of a sequence expression when a generator yields inside it.
+/// Tracks which sub-expression was being evaluated when the generator suspended,
+/// so on resume we skip already-evaluated sub-expressions (avoiding duplicate side effects).
+/// </summary>
+internal sealed class SequenceSuspendData : SuspendData
+{
+    /// <summary>
+    /// The index of the sub-expression that was being evaluated when the generator suspended.
+    /// </summary>
+    public int ExpressionIndex { get; set; }
 }
 
 internal sealed class SuspendDataDictionary

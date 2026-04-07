@@ -22,14 +22,18 @@ internal sealed class JintForInForOfStatement : JintStatement<Statement>
     private readonly Expression _rightExpression;
     private readonly IterationKind _iterationKind;
 
-    private ProbablyBlockStatement _body;
-    private JintExpression? _expr;
-    private DestructuringPattern? _assignmentPattern;
-    private JintExpression _right = null!;
-    private List<Key>? _tdzNames;
-    private bool _destructuring;
-    private LhsKind _lhsKind;
-    private DisposeHint _disposeHint;
+    private readonly ProbablyBlockStatement _body;
+    private readonly JintExpression? _expr;
+    private readonly DestructuringPattern? _assignmentPattern;
+    private readonly JintExpression _right;
+    private readonly List<Key>? _tdzNames;
+    private readonly bool _destructuring;
+    private readonly LhsKind _lhsKind;
+    private readonly DisposeHint _disposeHint;
+
+    // AnnexB B.3.6: for-in initializer expression (e.g., `for (var a = expr in obj)`)
+    private readonly JintExpression? _forInVarInitializer;
+    private readonly string? _forInVarName;
 
     public JintForInForOfStatement(ForInStatement statement) : base(statement)
     {
@@ -37,6 +41,17 @@ internal sealed class JintForInForOfStatement : JintStatement<Statement>
         _rightExpression = statement.Right;
         _forBody = statement.Body;
         _iterationKind = IterationKind.Enumerate;
+        InitializeLhs(out _lhsKind, out _disposeHint, out _tdzNames, out _destructuring, out _assignmentPattern, out _expr);
+        _body = new ProbablyBlockStatement(_forBody);
+        _right = JintExpression.Build(_rightExpression);
+
+        // AnnexB B.3.6: for-in with initializer
+        if (_leftNode is VariableDeclaration { Kind: VariableDeclarationKind.Var } varDecl
+            && varDecl.Declarations[0] is { Init: not null, Id: Identifier id })
+        {
+            _forInVarInitializer = JintExpression.Build(varDecl.Declarations[0].Init!);
+            _forInVarName = id.Name;
+        }
     }
 
     public JintForInForOfStatement(ForOfStatement statement) : base(statement)
@@ -45,57 +60,67 @@ internal sealed class JintForInForOfStatement : JintStatement<Statement>
         _rightExpression = statement.Right;
         _forBody = statement.Body;
         _iterationKind = statement.Await ? IterationKind.AsyncIterate : IterationKind.Iterate;
+        InitializeLhs(out _lhsKind, out _disposeHint, out _tdzNames, out _destructuring, out _assignmentPattern, out _expr);
+        _body = new ProbablyBlockStatement(_forBody);
+        _right = JintExpression.Build(_rightExpression);
     }
 
-    protected override void Initialize(EvaluationContext context2)
+    private void InitializeLhs(
+        out LhsKind lhsKind,
+        out DisposeHint disposeHint,
+        out List<Key>? tdzNames,
+        out bool destructuring,
+        out DestructuringPattern? assignmentPattern,
+        out JintExpression? expr)
     {
-        _lhsKind = LhsKind.Assignment;
-        _disposeHint = DisposeHint.Normal;
+        lhsKind = LhsKind.Assignment;
+        disposeHint = DisposeHint.Normal;
+        tdzNames = null;
+        destructuring = false;
+        assignmentPattern = null;
+        expr = null;
         switch (_leftNode)
         {
             case VariableDeclaration variableDeclaration:
                 {
-                    _lhsKind = variableDeclaration.Kind == VariableDeclarationKind.Var
+                    lhsKind = variableDeclaration.Kind == VariableDeclarationKind.Var
                         ? LhsKind.VarBinding
                         : LhsKind.LexicalBinding;
 
-                    _disposeHint = variableDeclaration.Kind.GetDisposeHint();
+                    disposeHint = variableDeclaration.Kind.GetDisposeHint();
 
                     var variableDeclarationDeclaration = variableDeclaration.Declarations[0];
                     var id = variableDeclarationDeclaration.Id;
-                    if (_lhsKind == LhsKind.LexicalBinding)
+                    if (lhsKind == LhsKind.LexicalBinding)
                     {
-                        _tdzNames = new List<Key>(1);
-                        id.GetBoundNames(_tdzNames);
+                        tdzNames = new List<Key>(1);
+                        id.GetBoundNames(tdzNames);
                     }
 
                     if (id is DestructuringPattern pattern)
                     {
-                        _destructuring = true;
-                        _assignmentPattern = pattern;
+                        destructuring = true;
+                        assignmentPattern = pattern;
                     }
                     else
                     {
                         var identifier = (Identifier) id;
-                        _expr = new JintIdentifierExpression(identifier);
+                        expr = new JintIdentifierExpression(identifier);
                     }
 
                     break;
                 }
             case DestructuringPattern pattern:
-                _destructuring = true;
-                _assignmentPattern = pattern;
+                destructuring = true;
+                assignmentPattern = pattern;
                 break;
             case MemberExpression memberExpression:
-                _expr = new JintMemberExpression(memberExpression);
+                expr = new JintMemberExpression(memberExpression);
                 break;
             default:
-                _expr = new JintIdentifierExpression((Identifier) _leftNode);
+                expr = new JintIdentifierExpression((Identifier) _leftNode);
                 break;
         }
-
-        _body = new ProbablyBlockStatement(_forBody);
-        _right = JintExpression.Build(_rightExpression);
     }
 
     protected override Completion ExecuteInternal(EvaluationContext context)
@@ -121,8 +146,7 @@ internal sealed class JintForInForOfStatement : JintStatement<Statement>
             // Try async for-await-of suspend data
             else if (suspendable.Data.TryGet(this, out forAwaitSuspendData))
             {
-                // Check if we're resuming from a rejection - if so, throw the error
-                // Note: This requires async-specific handling for _resumeWithThrow
+                // Check if we're resuming from a rejection in an async function - if so, throw the error
                 var asyncFunction = engine.ExecutionContext.AsyncFunction;
                 if (asyncFunction is not null && asyncFunction._lastAwaitNode == this && asyncFunction._resumeWithThrow)
                 {
@@ -136,11 +160,25 @@ internal sealed class JintForInForOfStatement : JintStatement<Statement>
                     return default;
                 }
 
+                // Check if we're resuming from a rejection in an async generator - if so, throw the error
+                if (forAwaitSuspendData!.RejectedValue is { } rejectedValue)
+                {
+                    suspendable.IsResuming = false;
+                    suspendable.Data.Clear(this);
+
+                    Throw.JavaScriptException(engine, rejectedValue, _statement!.Location);
+                    return default;
+                }
+
                 // We're resuming into this for-await-of loop - use the saved iterator
                 keyResult = forAwaitSuspendData!.Iterator;
                 resuming = true;
-                // Clear the resuming flag since we've handled it
-                suspendable.IsResuming = false;
+                // Only clear IsResuming if NOT resuming from yield inside destructuring
+                // (yield needs IsResuming to be true to return the resume value)
+                if (forAwaitSuspendData.CurrentValue is null)
+                {
+                    suspendable.IsResuming = false;
+                }
             }
         }
 
@@ -175,6 +213,15 @@ internal sealed class JintForInForOfStatement : JintStatement<Statement>
         }
 
         engine.UpdateLexicalEnvironment(tdz);
+
+        // AnnexB B.3.6: evaluate for-in initializer before the right-hand expression
+        if (_forInVarInitializer is not null)
+        {
+            var lhs = engine.ResolveBinding(_forInVarName!);
+            var value = _forInVarInitializer.GetValue(context);
+            engine.PutValue(lhs, value);
+        }
+
         var exprValue = _right.GetValue(context);
         engine.UpdateLexicalEnvironment(oldEnv);
 
@@ -229,6 +276,15 @@ internal sealed class JintForInForOfStatement : JintStatement<Statement>
         var suspendable = engine.ExecutionContext.Suspendable;
         var oldEnv = engine.ExecutionContext.LexicalEnvironment;
 
+        // When resuming from await/yield inside a body with let declarations,
+        // the saved execution context has a block-scoped environment. Restore
+        // the correct outer env from suspend data.
+        if (resuming && suspendData?.OuterEnv is not null)
+        {
+            oldEnv = suspendData.OuterEnv;
+            engine.UpdateLexicalEnvironment(oldEnv);
+        }
+
         // Restore accumulated value if resuming
         var v = suspendData?.AccumulatedValue ?? JsValue.Undefined;
         var destructuring = _destructuring;
@@ -241,11 +297,13 @@ internal sealed class JintForInForOfStatement : JintStatement<Statement>
         {
             while (true)
             {
+                engine.ExecutionContext.ClearCompletedAwaitsIfNotResuming();
+
                 DeclarativeEnvironment? iterationEnv = null;
                 JsValue nextValue;
 
                 // Skip TryIteratorStep if we're resuming and already have a current value
-                // (this happens when yield occurred during body execution)
+                // (this happens when yield occurred during body execution or destructuring)
                 if (resuming && suspendData?.CurrentValue is not null)
                 {
                     nextValue = suspendData.CurrentValue;
@@ -258,6 +316,15 @@ internal sealed class JintForInForOfStatement : JintStatement<Statement>
                     {
                         engine.UpdateLexicalEnvironment(iterationEnv);
                     }
+                }
+                else if (resuming && iteratorKind == IteratorKind.Async
+                         && suspendable?.Data.TryGet<ForAwaitSuspendData>(this, out var asyncResumeData) == true
+                         && asyncResumeData?.CurrentValue is not null)
+                {
+                    // Resuming from yield inside destructuring in for-await-of
+                    nextValue = asyncResumeData.CurrentValue;
+                    asyncResumeData.CurrentValue = null;
+                    resuming = false;
                 }
                 else
                 {
@@ -299,8 +366,13 @@ internal sealed class JintForInForOfStatement : JintStatement<Statement>
 
                             var nextPromise = nextMethod.Call(iteratorRecord.Instance, Arguments.Empty);
 
+                            // Per spec 13.7.5.13 step 5.b.c: Await(nextResult)
+                            // Await step 1: PromiseResolve(%Promise%, nextResult)
+                            // This makes constructor lookups observable per spec.
+                            var promiseResolved = engine.Realm.Intrinsics.Promise.PromiseResolve(nextPromise);
+
                             // If result is a Promise, we need to await it
-                            if (nextPromise is JsPromise promise)
+                            if (promiseResolved is JsPromise promise)
                             {
                                 // Save current state for resume (including iterator)
                                 if (asyncSuspendData is not null)
@@ -404,17 +476,27 @@ internal sealed class JintForInForOfStatement : JintStatement<Statement>
                 }
                 else
                 {
+                    // Save the original iterator value before destructuring (for potential resume)
+                    var iteratorValue = nextValue;
+
                     nextValue = DestructuringPatternAssignmentExpression.ProcessPatterns(
                         context,
                         _assignmentPattern!,
-                        nextValue,
+                        iteratorValue,
                         iterationEnv,
                         checkPatternPropertyReference: _lhsKind != LhsKind.VarBinding);
 
-                    // Check for suspension after destructuring
+                    // Check for suspension after destructuring (yield inside pattern)
                     if (context.IsSuspended())
                     {
                         close = false; // Don't close iterator, we'll resume later
+                        // Save the ORIGINAL iterator value for replay when resuming
+                        if (_iterationKind == IterationKind.AsyncIterate && suspendable is not null)
+                        {
+                            var asyncSD = suspendable.Data.GetOrCreate<ForAwaitSuspendData>(this);
+                            asyncSD.CurrentValue = iteratorValue;
+                            asyncSD.AccumulatedValue = v;
+                        }
                         completionType = CompletionType.Return;
                         return new Completion(CompletionType.Return, suspendable?.SuspendedValue ?? nextValue, _statement!);
                     }
@@ -467,8 +549,7 @@ internal sealed class JintForInForOfStatement : JintStatement<Statement>
                     return new Completion(status, nextValue, context.LastSyntaxElement);
                 }
 
-                // Before executing body, save state in case of yield (generators only, not async functions)
-                // ForOfSuspendData is generator-specific for sync for-of loops
+                // Before executing body, save state in case of yield/await suspension.
                 var generator = engine.ExecutionContext.Generator;
                 if (generator is not null)
                 {
@@ -476,6 +557,20 @@ internal sealed class JintForInForOfStatement : JintStatement<Statement>
                     data.AccumulatedValue = v;
                     data.CurrentValue = nextValue;
                     data.IterationEnv = iterationEnv;
+                    data.OuterEnv = oldEnv;
+                }
+
+                // For async functions with sync iterators, save state so that if an await
+                // in the body suspends execution, we can resume at the correct iteration
+                // without restarting the whole loop from scratch.
+                var asyncFnBody = engine.ExecutionContext.AsyncFunction;
+                if (iteratorKind == IteratorKind.Sync && asyncFnBody is not null)
+                {
+                    var asyncData = asyncFnBody.Data.GetOrCreate<ForOfSuspendData>(this, iteratorRecord);
+                    asyncData.AccumulatedValue = v;
+                    asyncData.CurrentValue = nextValue;
+                    asyncData.IterationEnv = iterationEnv;
+                    asyncData.OuterEnv = oldEnv;
                 }
 
                 var result = stmt.Execute(context);
@@ -621,21 +716,18 @@ internal sealed class JintForInForOfStatement : JintStatement<Statement>
             asyncInstance._state = AsyncFunctionState.SuspendedAwait;
             asyncInstance._savedContext = engine.ExecutionContext;
 
-            // Create resume handlers
+            // Create resume handlers - resume directly inside the reaction job (no extra AddToEventLoop hop)
             var onFulfilled = new ClrFunction(engine, "", (_, args) =>
             {
                 var resolvedValue = args.At(0);
 
-                engine.AddToEventLoop(() =>
-                {
-                    // Store the resolved iterator result for resume
-                    var resumeSuspendData = asyncInstance.Data.GetOrCreate<ForAwaitSuspendData>(this);
-                    resumeSuspendData.ResolvedIteratorResult = resolvedValue as ObjectInstance;
+                // Store the resolved iterator result for resume
+                var resumeSuspendData = asyncInstance.Data.GetOrCreate<ForAwaitSuspendData>(this);
+                resumeSuspendData.ResolvedIteratorResult = resolvedValue as ObjectInstance;
 
-                    asyncInstance._resumeValue = JsValue.Undefined;
-                    asyncInstance._resumeWithThrow = false;
-                    JintAwaitExpression.AsyncFunctionResume(engine, asyncInstance);
-                });
+                asyncInstance._resumeValue = JsValue.Undefined;
+                asyncInstance._resumeWithThrow = false;
+                JintAwaitExpression.AsyncFunctionResume(engine, asyncInstance);
 
                 return JsValue.Undefined;
             }, 1, PropertyFlag.Configurable);
@@ -644,50 +736,51 @@ internal sealed class JintForInForOfStatement : JintStatement<Statement>
             {
                 var rejectedValue = args.At(0);
 
-                engine.AddToEventLoop(() =>
-                {
-                    asyncInstance._resumeValue = rejectedValue;
-                    asyncInstance._resumeWithThrow = true;
-                    JintAwaitExpression.AsyncFunctionResume(engine, asyncInstance);
-                });
+                asyncInstance._resumeValue = rejectedValue;
+                asyncInstance._resumeWithThrow = true;
+                JintAwaitExpression.AsyncFunctionResume(engine, asyncInstance);
 
                 return JsValue.Undefined;
             }, 1, PropertyFlag.Configurable);
 
-            var resultCapability = PromiseConstructor.NewPromiseCapability(engine, engine.Realm.Intrinsics.Promise);
-            PromiseOperations.PerformPromiseThen(engine, promise, onFulfilled, onRejected, resultCapability);
+            // Per spec Await step 3: PerformPromiseThen(promise, onFulfilled, onRejected) with no resultCapability
+            PromiseOperations.PerformPromiseThen(engine, promise, onFulfilled, onRejected, null!);
 
             // Return with completion that signals suspension
             return new Completion(CompletionType.Normal, JsValue.Undefined, _statement!);
         }
         else if (asyncGenerator is not null)
         {
-            // When iterating over an async generator from within the same async generator,
-            // we need to use the async generator's suspension mechanism.
             // Save iterator and state for resume
             var suspendData = asyncGenerator.Data.GetOrCreate<ForAwaitSuspendData>(this);
             suspendData.Iterator = iterator;
             suspendData.AccumulatedValue = accumulatedValue;
 
+            // Capture the current promise capability before suspending —
+            // the request was already dequeued by AsyncGeneratorResumeNext() before
+            // reaching here, so the queue is now empty. On resume we must continue
+            // THIS request's execution, not start a new one via AsyncGeneratorResumeNext().
+            var currentCapability = asyncGenerator._currentPromiseCapability!;
+
             // Mark that we're waiting for the iterator result
             asyncGenerator._asyncGeneratorState = Native.AsyncGenerator.AsyncGeneratorState.SuspendedYield;
 
-            // Create resume handlers - just store the result, the async generator's
-            // own mechanisms will handle resumption
+            // Create resume handlers. Use AddToEventLoop (like the async-function path) so
+            // the actual resumption happens in a distinct event-loop turn, matching spec
+            // microtask ordering.
             var onFulfilled = new ClrFunction(engine, "", (_, args) =>
             {
                 var resolvedValue = args.At(0);
 
-                // Store the resolved iterator result for when we resume
-                var resumeSuspendData = asyncGenerator.Data.GetOrCreate<ForAwaitSuspendData>(this);
-                resumeSuspendData.ResolvedIteratorResult = resolvedValue as ObjectInstance;
+                engine.AddToEventLoop(() =>
+                {
+                    // Store the resolved iterator result so the for-await-of loop can use it
+                    var resumeSuspendData = asyncGenerator.Data.GetOrCreate<ForAwaitSuspendData>(this);
+                    resumeSuspendData.ResolvedIteratorResult = resolvedValue as ObjectInstance;
 
-                // Set up for resumption - mark as resuming so the for-await-of loop
-                // knows to use the stored result
-                asyncGenerator._isResuming = true;
-
-                // Resume the async generator
-                asyncGenerator.AsyncGeneratorResumeNext();
+                    // Resume the current request's execution (queue is empty – cannot use AsyncGeneratorResumeNext)
+                    asyncGenerator.AsyncGeneratorContinueForAwait(currentCapability);
+                });
 
                 return JsValue.Undefined;
             }, 1, PropertyFlag.Configurable);
@@ -696,11 +789,15 @@ internal sealed class JintForInForOfStatement : JintStatement<Statement>
             {
                 var rejectedValue = args.At(0);
 
-                // On rejection, throw in the async generator context
-                asyncGenerator._error = rejectedValue;
-                asyncGenerator._isResuming = true;
-                asyncGenerator._resumeCompletionType = CompletionType.Throw;
-                asyncGenerator.AsyncGeneratorResumeNext();
+                engine.AddToEventLoop(() =>
+                {
+                    // Store the rejection so ExecuteInternal can propagate it as a throw
+                    var resumeSuspendData = asyncGenerator.Data.GetOrCreate<ForAwaitSuspendData>(this);
+                    resumeSuspendData.RejectedValue = rejectedValue;
+
+                    // Resume the current request's execution so the throw can be handled
+                    asyncGenerator.AsyncGeneratorContinueForAwait(currentCapability);
+                });
 
                 return JsValue.Undefined;
             }, 1, PropertyFlag.Configurable);

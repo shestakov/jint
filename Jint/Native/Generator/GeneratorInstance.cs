@@ -54,6 +54,12 @@ internal sealed class GeneratorInstance : ObjectInstance, ISuspendable
     internal IteratorInstance? _delegatingIterator;
 
     /// <summary>
+    /// The cached [[NextMethod]] obtained once before the yield* delegation loop.
+    /// Per spec step 7.a.i, next must be fetched once, not per-iteration.
+    /// </summary>
+    internal ICallable? _delegatingNextMethod;
+
+    /// <summary>
     /// The yield* expression we're delegating from.
     /// </summary>
     internal object? _delegatingYieldNode;
@@ -236,6 +242,13 @@ internal sealed class GeneratorInstance : ObjectInstance, ISuspendable
 
         var result = _generatorBody.Execute(context);
         _engine.LeaveExecutionContext();
+
+        // https://tc39.es/ecma262/#sec-generatorstart step 4.i-j
+        // Dispose resources when generator body completes (not when yielding)
+        if (_generatorState != GeneratorState.SuspendedYield)
+        {
+            result = genContext.LexicalEnvironment.DisposeResources(result);
+        }
 
         ObjectInstance? resultValue = null;
         if (result.Type == CompletionType.Normal)

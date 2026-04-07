@@ -19,6 +19,8 @@ namespace Jint.Native.Array;
 /// </summary>
 public sealed class ArrayPrototype : ArrayInstance
 {
+    private const int ConstraintCheckInterval = 10_000;
+
     private readonly Realm _realm;
     private readonly ArrayConstructor _constructor;
     private readonly ObjectTraverseStack _joinStack;
@@ -169,6 +171,12 @@ public sealed class ArrayPrototype : ArrayInstance
         {
             a[k] = k == (ulong) actualIndex ? value : o.Get(k);
             k++;
+
+            // Check constraints periodically to prevent long-running operations
+            if (k > 0 && k % ConstraintCheckInterval == 0)
+            {
+                _engine.Constraints.Check();
+            }
         }
         return new JsArray(_engine, a);
     }
@@ -229,9 +237,15 @@ public sealed class ArrayPrototype : ArrayInstance
             final = (ulong) System.Math.Min(relativeEnd, length);
         }
 
+        // Check constraints periodically to prevent memory exhaustion in large fills
         for (var i = k; i < final; ++i)
         {
             operations.Set(i, value, throwOnError: false);
+
+            if (i > k && (i - k) % ConstraintCheckInterval == 0)
+            {
+                _engine.Constraints.Check();
+            }
         }
 
         return o;
@@ -290,6 +304,7 @@ public sealed class ArrayPrototype : ArrayInstance
         }
 
         var count = (long) System.Math.Min(final - from, len - to);
+        var initialCount = count;
 
         long direction = 1;
 
@@ -315,6 +330,12 @@ public sealed class ArrayPrototype : ArrayInstance
             from += direction;
             to += direction;
             count--;
+
+            // Check constraints periodically to prevent long-running operations
+            if ((initialCount - count) % ConstraintCheckInterval == 0)
+            {
+                _engine.Constraints.Check();
+            }
         }
 
         return o;
@@ -388,7 +409,7 @@ public sealed class ArrayPrototype : ArrayInstance
 
         if (len == 0 && arguments.Length < 2)
         {
-            Throw.TypeError(_realm);
+            Throw.TypeError(_realm, "Reduce of empty array with no initial value");
         }
 
         var k = 0;
@@ -412,7 +433,7 @@ public sealed class ArrayPrototype : ArrayInstance
 
             if (kPresent == false)
             {
-                Throw.TypeError(_realm);
+                Throw.TypeError(_realm, "Reduce of empty array with no initial value");
             }
         }
 
@@ -552,7 +573,7 @@ public sealed class ArrayPrototype : ArrayInstance
 
         if (!mapperFunction.IsCallable)
         {
-            Throw.TypeError(_realm, "flatMap mapper function is not callable");
+            Throw.TypeError(_realm, $"{mapperFunction} is not a function");
         }
 
         var A = _realm.Intrinsics.Array.ArraySpeciesCreate(O.Target, 0);
@@ -615,7 +636,7 @@ public sealed class ArrayPrototype : ArrayInstance
                 {
                     if (targetIndex >= NumberConstructor.MaxSafeInteger)
                     {
-                        Throw.TypeError(_realm);
+                        Throw.TypeError(_realm, "Invalid array length");
                     }
 
                     target.CreateDataPropertyOrThrow(targetIndex, element);
@@ -869,22 +890,22 @@ public sealed class ArrayPrototype : ArrayInstance
         var len = target.GetLength();
         var relativeIndex = TypeConverter.ToInteger(arguments.At(0));
 
-        ulong actualIndex;
+        long actualIndex;
         if (relativeIndex < 0)
         {
-            actualIndex = (ulong) (len + relativeIndex);
+            actualIndex = (long) (len + relativeIndex);
         }
         else
         {
-            actualIndex = (ulong) relativeIndex;
+            actualIndex = (long) relativeIndex;
         }
 
-        if (actualIndex < 0 || actualIndex >= len)
+        if (actualIndex < 0 || (ulong) actualIndex >= len)
         {
             return Undefined;
         }
 
-        return target.Get(actualIndex);
+        return target.Get((ulong) actualIndex);
     }
 
     /// <summary>
@@ -1255,6 +1276,12 @@ public sealed class ArrayPrototype : ArrayInstance
             }
 
             lower++;
+
+            // Check constraints periodically to prevent long-running operations
+            if (lower > 0 && lower % ConstraintCheckInterval == 0)
+            {
+                _engine.Constraints.Check();
+            }
         }
 
         return o.Target;
@@ -1441,6 +1468,12 @@ public sealed class ArrayPrototype : ArrayInstance
         {
             var from = len - k - 1;
             a[k++] = o.Get(from);
+
+            // Check constraints periodically to prevent long-running operations
+            if (k > 0 && k % ConstraintCheckInterval == 0)
+            {
+                _engine.Constraints.Check();
+            }
         }
         return new JsArray(_engine, a);
     }
@@ -1518,7 +1551,7 @@ public sealed class ArrayPrototype : ArrayInstance
         var newLen = len + insertCount - actualDeleteCount;
         if (newLen > ArrayOperations.MaxArrayLikeLength)
         {
-            Throw.TypeError(_realm, "Invalid input length");
+            Throw.TypeError(_realm, "Invalid array length");
         }
 
         ValidateArrayLength(newLen);
@@ -1597,7 +1630,7 @@ public sealed class ArrayPrototype : ArrayInstance
 
         if (len == 0 && arguments.Length < 2)
         {
-            Throw.TypeError(_realm);
+            Throw.TypeError(_realm, "Reduce of empty array with no initial value");
         }
 
         long k = (long) (len - 1);
@@ -1621,7 +1654,7 @@ public sealed class ArrayPrototype : ArrayInstance
 
             if (kPresent == false)
             {
-                Throw.TypeError(_realm);
+                Throw.TypeError(_realm, "Reduce of empty array with no initial value");
             }
         }
 

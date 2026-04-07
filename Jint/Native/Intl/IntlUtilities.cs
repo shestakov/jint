@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.RegularExpressions;
 using Jint.Native.Intl.Data;
@@ -12,6 +13,9 @@ namespace Jint.Native.Intl;
 /// </summary>
 internal static class IntlUtilities
 {
+    // Cache for CultureInfo instances to avoid repeated allocations.
+    // CultureInfo with useUserOverride:false is immutable, safe to cache and share.
+    private static readonly ConcurrentDictionary<string, CultureInfo?> _cultureCache = new(StringComparer.OrdinalIgnoreCase);
     // BCP 47 language tag pattern (permissive to accept Unicode extensions)
     // Accepts: language[-script][-region][-variant]*[-extension]*[-privateuse]
     // Extensions use single-character singletons like -u- for Unicode extensions
@@ -184,6 +188,35 @@ internal static class IntlUtilities
         { "BU", "MM" },    // Burma -> Myanmar
         { "SU", "RU" },    // Soviet Union -> Russia (simplified)
         { "FX", "FR" },    // Metropolitan France -> France
+    };
+
+    /// <summary>
+    /// Likely script for common languages (from CLDR likelySubtags).
+    /// Used for complex region subtag replacement when no explicit script is present.
+    /// </summary>
+    private static readonly Dictionary<string, string> LikelyScripts = new(StringComparer.OrdinalIgnoreCase)
+    {
+        { "aa", "Latn" }, { "ab", "Cyrl" }, { "af", "Latn" }, { "am", "Ethi" },
+        { "ar", "Arab" }, { "as", "Beng" }, { "az", "Latn" }, { "be", "Cyrl" },
+        { "bg", "Cyrl" }, { "bn", "Beng" }, { "bs", "Latn" }, { "ca", "Latn" },
+        { "cs", "Latn" }, { "cy", "Latn" }, { "da", "Latn" }, { "de", "Latn" },
+        { "el", "Grek" }, { "en", "Latn" }, { "es", "Latn" }, { "et", "Latn" },
+        { "eu", "Latn" }, { "fa", "Arab" }, { "fi", "Latn" }, { "fr", "Latn" },
+        { "ga", "Latn" }, { "gl", "Latn" }, { "gu", "Gujr" }, { "he", "Hebr" },
+        { "hi", "Deva" }, { "hr", "Latn" }, { "hu", "Latn" }, { "hy", "Armn" },
+        { "id", "Latn" }, { "is", "Latn" }, { "it", "Latn" }, { "ja", "Jpan" },
+        { "ka", "Geor" }, { "kk", "Cyrl" }, { "km", "Khmr" }, { "kn", "Knda" },
+        { "ko", "Kore" }, { "ky", "Cyrl" }, { "lo", "Laoo" }, { "lt", "Latn" },
+        { "lv", "Latn" }, { "mk", "Cyrl" }, { "ml", "Mlym" }, { "mn", "Cyrl" },
+        { "mr", "Deva" }, { "ms", "Latn" }, { "my", "Mymr" }, { "nb", "Latn" },
+        { "ne", "Deva" }, { "nl", "Latn" }, { "nn", "Latn" }, { "no", "Latn" },
+        { "or", "Orya" }, { "pa", "Guru" }, { "pl", "Latn" }, { "ps", "Arab" },
+        { "pt", "Latn" }, { "ro", "Latn" }, { "ru", "Cyrl" }, { "si", "Sinh" },
+        { "sk", "Latn" }, { "sl", "Latn" }, { "sq", "Latn" }, { "sr", "Cyrl" },
+        { "sv", "Latn" }, { "sw", "Latn" }, { "ta", "Taml" }, { "te", "Telu" },
+        { "tg", "Cyrl" }, { "th", "Thai" }, { "tk", "Latn" }, { "tr", "Latn" },
+        { "uk", "Cyrl" }, { "und", "Latn" }, { "ur", "Arab" }, { "uz", "Latn" },
+        { "vi", "Latn" }, { "zh", "Hans" },
     };
 
     /// <summary>
@@ -607,6 +640,7 @@ internal static class IntlUtilities
         var tlangHasScript = false;
         var tlangHasRegion = false;
         var currentTKeyHasValue = true; // Start true since we don't have a key yet
+        HashSet<string>? tlangSeenVariants = null;
 
         while (index < parts.Length)
         {
@@ -647,6 +681,11 @@ internal static class IntlUtilities
                 {
                     // 4-char variant starting with digit (e.g., "1994")
                     // Must come after script/region checks
+                    tlangSeenVariants ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    if (!tlangSeenVariants.Add(part))
+                    {
+                        return false; // Duplicate variant in tlang
+                    }
                 }
                 else if (!tlangHasRegion && ((part.Length == 2 && IsAllLetters(part)) || (part.Length == 3 && IsAllDigits(part))))
                 {
@@ -656,7 +695,11 @@ internal static class IntlUtilities
                 else if (IsValidVariant(part))
                 {
                     // Variant subtag (5-8 alphanum or 4 starting with digit)
-                    // OK
+                    tlangSeenVariants ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    if (!tlangSeenVariants.Add(part))
+                    {
+                        return false; // Duplicate variant in tlang
+                    }
                 }
                 else
                 {
@@ -841,10 +884,33 @@ internal static class IntlUtilities
             }
         }
 
-        // 4. Apply region aliasing (LocaleData first, then fallback)
+        // 4. Apply region aliasing with script-aware replacement for multi-territory regions
         if (parsed.Region != null)
         {
-            if (LocaleData.RegionMappings.TryGetValue(parsed.Region, out var regionReplacement))
+            // First try script-aware replacement (for deprecated regions with multiple replacements)
+            var script = parsed.Script;
+            if (script == null && parsed.Language != null)
+            {
+                LikelyScripts.TryGetValue(parsed.Language, out script);
+            }
+
+            if (script != null)
+            {
+                var scriptRegionKey = script + "+" + parsed.Region;
+                if (LocaleData.ScriptRegionMappings.TryGetValue(scriptRegionKey, out var scriptRegionReplacement))
+                {
+                    parsed.Region = scriptRegionReplacement;
+                }
+                else if (LocaleData.RegionMappings.TryGetValue(parsed.Region, out var regionReplacement))
+                {
+                    parsed.Region = regionReplacement;
+                }
+                else if (RegionAliases.TryGetValue(parsed.Region, out regionReplacement))
+                {
+                    parsed.Region = regionReplacement;
+                }
+            }
+            else if (LocaleData.RegionMappings.TryGetValue(parsed.Region, out var regionReplacement))
             {
                 parsed.Region = regionReplacement;
             }
@@ -857,11 +923,57 @@ internal static class IntlUtilities
         // 5. Apply variant aliasing from CLDR data
         if (parsed.Variants != null && parsed.Variants.Count > 0)
         {
-            for (var i = 0; i < parsed.Variants.Count; i++)
+            for (var i = parsed.Variants.Count - 1; i >= 0; i--)
             {
                 if (LocaleData.VariantMappings.TryGetValue(parsed.Variants[i], out var variantMapping))
                 {
-                    parsed.Variants[i] = variantMapping.Replacement;
+                    if (string.Equals(variantMapping.Type, "language", StringComparison.Ordinal))
+                    {
+                        // Variant maps to a language replacement - remove variant and update language
+                        parsed.Language = variantMapping.Replacement;
+                        parsed.Variants.RemoveAt(i);
+                    }
+                    else if (string.Equals(variantMapping.Type, "region", StringComparison.Ordinal))
+                    {
+                        // Variant maps to a region - remove variant and set region
+                        if (parsed.Region == null)
+                        {
+                            parsed.Region = variantMapping.Replacement;
+                        }
+                        parsed.Variants.RemoveAt(i);
+                    }
+                    else
+                    {
+                        // Type is "variant" - simple variant replacement
+                        parsed.Variants[i] = variantMapping.Replacement;
+
+                        // Remove prefix variants if specified
+                        if (variantMapping.Prefix != null)
+                        {
+                            for (var j = parsed.Variants.Count - 1; j >= 0; j--)
+                            {
+                                if (j != i && string.Equals(parsed.Variants[j], variantMapping.Prefix, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    parsed.Variants.RemoveAt(j);
+                                    if (j < i) i--;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 5b. Apply language+variant mappings (e.g., "art+lojban" → "jbo")
+        if (parsed.Language != null && parsed.Variants != null && parsed.Variants.Count > 0)
+        {
+            for (var i = parsed.Variants.Count - 1; i >= 0; i--)
+            {
+                var key = parsed.Language + "+" + parsed.Variants[i].ToLowerInvariant();
+                if (LocaleData.LanguageVariantMappings.TryGetValue(key, out var newLanguage))
+                {
+                    parsed.Language = newLanguage;
+                    parsed.Variants.RemoveAt(i);
                 }
             }
         }
@@ -1281,51 +1393,6 @@ internal static class IntlUtilities
     }
 
     /// <summary>
-    /// Manually canonicalize a language tag according to BCP 47 rules.
-    /// </summary>
-    private static string CanonicalizeLanguageTag(string tag)
-    {
-        var parts = tag.Split('-');
-        if (parts.Length == 0)
-        {
-            return tag;
-        }
-
-        var result = new List<string>();
-
-        // Language subtag (first part) - lowercase
-        result.Add(parts[0].ToLowerInvariant());
-
-        for (var i = 1; i < parts.Length; i++)
-        {
-            var part = parts[i];
-
-            if (part.Length == 4 && char.IsLetter(part[0]))
-            {
-                // Script subtag - title case
-                result.Add(char.ToUpperInvariant(part[0]) + part.Substring(1).ToLowerInvariant());
-            }
-            else if (part.Length == 2 && char.IsLetter(part[0]))
-            {
-                // Region subtag (2 letters) - uppercase
-                result.Add(part.ToUpperInvariant());
-            }
-            else if (part.Length == 3 && char.IsDigit(part[0]))
-            {
-                // Region subtag (3 digits) - as is
-                result.Add(part);
-            }
-            else
-            {
-                // Singleton, variant, or extension subtag - lowercase
-                result.Add(part.ToLowerInvariant());
-            }
-        }
-
-        return string.Join("-", result);
-    }
-
-    /// <summary>
     /// https://tc39.es/ecma402/#sec-resolvelocale
     /// </summary>
     internal static ResolvedLocale ResolveLocale(
@@ -1568,6 +1635,11 @@ internal static class IntlUtilities
             return null;
         }
 
+        return _cultureCache.GetOrAdd(locale, static key => CreateCultureInfo(key));
+    }
+
+    private static CultureInfo? CreateCultureInfo(string locale)
+    {
         try
         {
             // Remove Unicode extensions before creating CultureInfo
@@ -1575,7 +1647,8 @@ internal static class IntlUtilities
             // Use new CultureInfo() instead of GetCultureInfo() to get correct locale-specific
             // data. GetCultureInfo returns a cached read-only culture that may have different
             // NumberFormatInfo patterns (e.g., CurrencyNegativePattern).
-            return new CultureInfo(cultureTag);
+            // useUserOverride: false ensures consistent behavior regardless of Windows regional settings.
+            return new CultureInfo(cultureTag, false);
         }
         catch (CultureNotFoundException)
         {

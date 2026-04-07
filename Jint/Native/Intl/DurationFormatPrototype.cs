@@ -1,7 +1,7 @@
-#pragma warning disable CA1859 // Use concrete types when possible for improved performance -- prototype methods return JsValue
-
+using System.Numerics;
 using Jint.Native.Object;
 using Jint.Native.Symbol;
+using Jint.Native.Temporal;
 using Jint.Runtime;
 using Jint.Runtime.Descriptors;
 using Jint.Runtime.Interop;
@@ -72,7 +72,7 @@ internal sealed class DurationFormatPrototype : Prototype
     /// <summary>
     /// https://tc39.es/proposal-intl-duration-format/#sec-intl.durationformat.prototype.formattoparts
     /// </summary>
-    private JsValue FormatToParts(JsValue thisObject, JsCallArguments arguments)
+    private JsArray FormatToParts(JsValue thisObject, JsCallArguments arguments)
     {
         var durationFormat = ValidateDurationFormat(thisObject);
         var duration = arguments.At(0);
@@ -84,7 +84,7 @@ internal sealed class DurationFormatPrototype : Prototype
     /// <summary>
     /// https://tc39.es/proposal-intl-duration-format/#sec-intl.durationformat.prototype.resolvedoptions
     /// </summary>
-    private JsValue ResolvedOptions(JsValue thisObject, JsCallArguments arguments)
+    private JsObject ResolvedOptions(JsValue thisObject, JsCallArguments arguments)
     {
         var durationFormat = ValidateDurationFormat(thisObject);
 
@@ -136,8 +136,30 @@ internal sealed class DurationFormatPrototype : Prototype
         // Per spec: if input is a string, try to parse it as a duration
         if (value.IsString())
         {
-            // String durations not yet supported - throw RangeError
-            Throw.RangeError(_realm, "Duration string parsing is not supported");
+            var parsed = TemporalHelpers.ParseDuration(value.ToString());
+            if (parsed is null)
+            {
+                Throw.RangeError(_realm, "Invalid duration string");
+                return default;
+            }
+
+            var dr = parsed.Value;
+            var record = new JsDurationFormat.DurationRecord
+            {
+                Years = dr.Years,
+                Months = dr.Months,
+                Weeks = dr.Weeks,
+                Days = dr.Days,
+                Hours = dr.Hours,
+                Minutes = dr.Minutes,
+                Seconds = dr.Seconds,
+                Milliseconds = dr.Milliseconds,
+                Microseconds = dr.Microseconds,
+                Nanoseconds = dr.Nanoseconds,
+            };
+
+            ValidateDurationRecord(record);
+            return record;
         }
 
         if (!value.IsObject())
@@ -146,6 +168,28 @@ internal sealed class DurationFormatPrototype : Prototype
         }
 
         var obj = value.AsObject();
+
+        // Fast path for Temporal.Duration objects - read internal slots directly
+        if (obj is JsDuration jsDuration)
+        {
+            var dr = jsDuration.DurationRecord;
+            var record = new JsDurationFormat.DurationRecord
+            {
+                Years = dr.Years,
+                Months = dr.Months,
+                Weeks = dr.Weeks,
+                Days = dr.Days,
+                Hours = dr.Hours,
+                Minutes = dr.Minutes,
+                Seconds = dr.Seconds,
+                Milliseconds = dr.Milliseconds,
+                Microseconds = dr.Microseconds,
+                Nanoseconds = dr.Nanoseconds,
+            };
+
+            ValidateDurationRecord(record);
+            return record;
+        }
 
         // Check if at least one duration property is defined and not undefined
         var hasDefinedProperty = false;
@@ -164,29 +208,30 @@ internal sealed class DurationFormatPrototype : Prototype
             Throw.TypeError(_realm, "Duration must have at least one duration property defined");
         }
 
-        var record = new JsDurationFormat.DurationRecord();
+        {
+            var record = new JsDurationFormat.DurationRecord();
 
-        record.Years = GetDurationComponent(obj, "years");
-        record.Months = GetDurationComponent(obj, "months");
-        record.Weeks = GetDurationComponent(obj, "weeks");
-        record.Days = GetDurationComponent(obj, "days");
-        record.Hours = GetDurationComponent(obj, "hours");
-        record.Minutes = GetDurationComponent(obj, "minutes");
-        record.Seconds = GetDurationComponent(obj, "seconds");
-        record.Milliseconds = GetDurationComponent(obj, "milliseconds");
-        record.Microseconds = GetDurationComponent(obj, "microseconds");
-        record.Nanoseconds = GetDurationComponent(obj, "nanoseconds");
+            record.Years = GetDurationComponent(obj, "years");
+            record.Months = GetDurationComponent(obj, "months");
+            record.Weeks = GetDurationComponent(obj, "weeks");
+            record.Days = GetDurationComponent(obj, "days");
+            record.Hours = GetDurationComponent(obj, "hours");
+            record.Minutes = GetDurationComponent(obj, "minutes");
+            record.Seconds = GetDurationComponent(obj, "seconds");
+            record.Milliseconds = GetDurationComponent(obj, "milliseconds");
+            record.Microseconds = GetDurationComponent(obj, "microseconds");
+            record.Nanoseconds = GetDurationComponent(obj, "nanoseconds");
 
-        // Validate the duration record per spec (IsValidDurationRecord)
-        ValidateDurationRecord(record);
+            // Validate the duration record per spec (IsValidDurationRecord)
+            ValidateDurationRecord(record);
 
-        return record;
+            return record;
+        }
     }
 
     private void ValidateDurationRecord(JsDurationFormat.DurationRecord record)
     {
         const double MaxYearsMonthsWeeks = 4294967296.0; // 2^32
-        const double MaxSafeInteger = 9007199254740992.0; // 2^53
 
         // Check if years, months, weeks are in valid range
         if (System.Math.Abs(record.Years) >= MaxYearsMonthsWeeks)
@@ -205,16 +250,21 @@ internal sealed class DurationFormatPrototype : Prototype
         // Per spec: normalizedSeconds = days × 86400 + hours × 3600 + minutes × 60 + seconds +
         //   milliseconds × 10^-3 + microseconds × 10^-6 + nanoseconds × 10^-9
         // If abs(normalizedSeconds) >= 2^53, throw RangeError
-        var normalizedSeconds =
-            record.Days * 86400 +
-            record.Hours * 3600 +
-            record.Minutes * 60 +
-            record.Seconds +
-            record.Milliseconds * 1e-3 +
-            record.Microseconds * 1e-6 +
-            record.Nanoseconds * 1e-9;
+        // Use BigInteger arithmetic to avoid double precision loss.
+        // Compute totalNanoseconds = normalizedSeconds × 10^9 (exact integer arithmetic)
+        var totalNanoseconds =
+            new BigInteger(record.Days) * 86_400_000_000_000 +
+            new BigInteger(record.Hours) * 3_600_000_000_000 +
+            new BigInteger(record.Minutes) * 60_000_000_000 +
+            new BigInteger(record.Seconds) * 1_000_000_000 +
+            new BigInteger(record.Milliseconds) * 1_000_000 +
+            new BigInteger(record.Microseconds) * 1_000 +
+            new BigInteger(record.Nanoseconds);
 
-        if (System.Math.Abs(normalizedSeconds) >= MaxSafeInteger)
+        // maxTimeDuration = 2^53 × 10^9 - 1 (the maximum valid total nanoseconds)
+        // abs(totalNanoseconds) >= 2^53 × 10^9 means normalizedSeconds >= 2^53
+        BigInteger maxTimeDuration = ((BigInteger) 1 << 53) * 1_000_000_000;
+        if (BigInteger.Abs(totalNanoseconds) >= maxTimeDuration)
         {
             Throw.RangeError(_realm, "Duration time values out of range");
         }

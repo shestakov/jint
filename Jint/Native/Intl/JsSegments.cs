@@ -1,5 +1,3 @@
-#pragma warning disable CA1859 // Use concrete types when possible for improved performance -- iterator protocol requires JsValue
-
 using System.Globalization;
 using Jint.Native.Iterator;
 using Jint.Native.Object;
@@ -79,7 +77,7 @@ internal sealed class JsSegments : ObjectInstance
     /// <summary>
     /// https://tc39.es/ecma402/#sec-%segmentsprototype%-@@iterator
     /// </summary>
-    private JsValue GetIterator(JsValue thisObject, JsCallArguments arguments)
+    private SegmentIterator GetIterator(JsValue thisObject, JsCallArguments arguments)
     {
         return new SegmentIterator(_engine, this);
     }
@@ -240,17 +238,7 @@ internal sealed class JsSegments : ObjectInstance
         return segments;
     }
 
-    private readonly struct GraphemeInfo
-    {
-        public readonly string Text;
-        public readonly int Index;
-
-        public GraphemeInfo(string text, int index)
-        {
-            Text = text;
-            Index = index;
-        }
-    }
+    private readonly record struct GraphemeInfo(string Text, int Index);
 
     private static List<SegmentData> ComputeSentenceSegments(string input)
     {

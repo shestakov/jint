@@ -63,7 +63,15 @@ public sealed class MapConstructor : Constructor
     {
         if (newTarget.IsUndefined())
         {
-            Throw.TypeError(_realm);
+            Throw.TypeError(_realm, $"Constructor {_nameDescriptor?.Value} requires 'new'");
+        }
+
+        if (ReferenceEquals(newTarget, this))
+        {
+            return new JsMap(_engine, _realm)
+            {
+                _prototype = PrototypeObject
+            };
         }
 
         var map = OrdinaryCreateFromConstructor(

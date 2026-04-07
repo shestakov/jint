@@ -100,9 +100,8 @@ public partial class ObjectInstance
             Throw.TypeError(_engine.Realm, $"'#{property}' was defined without a getter");
         }
 
-        var functionInstance = (Function.Function) getter;
-        var privateGet = functionInstance._engine.Call(functionInstance, this);
-        return privateGet;
+        var callable = (ICallable) getter;
+        return _engine.Call(callable, this, Arguments.Empty, null);
     }
 
     /// <summary>
@@ -149,7 +148,7 @@ public partial class ObjectInstance
 internal sealed class ClassFieldDefinition
 {
     public required JsValue Name { get; set; }
-    public ScriptFunction? Initializer { get; set; }
+    public Function.Function? Initializer { get; set; }
 }
 
 internal sealed class ClassStaticBlockDefinition

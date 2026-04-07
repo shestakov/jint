@@ -4,15 +4,15 @@ using System.Linq;
 using System.Reflection;
 using Jint.Native;
 using Jint.Native.Function;
+using Jint.Native.Intl;
 using Jint.Native.Object;
+using Jint.Native.Temporal;
 using Jint.Runtime;
-using Jint.Runtime.Interop;
+using Jint.Runtime.CallStack;
 using Jint.Runtime.Debugger;
 using Jint.Runtime.Descriptors;
+using Jint.Runtime.Interop;
 using Jint.Runtime.Modules;
-using Jint.Runtime.CallStack;
-using Jint.Native.Intl;
-using Jint.Native.Temporal;
 
 namespace Jint;
 
@@ -29,6 +29,8 @@ public class Options
     public delegate ObjectInstance? WrapObjectDelegate(Engine engine, object target, Type? type);
 
     public delegate bool ExceptionHandlerDelegate(Exception exception);
+
+    public delegate void ClrExceptionErrorDecoratorDelegate(Engine engine, ObjectInstance error, Exception exception);
 
     public delegate string? BuildCallStackDelegate(string shortDescription, SourceLocation location, string[]? arguments);
 
@@ -125,6 +127,15 @@ public class Options
     /// What experimental features are allowed, functionality may lacking or even plain wrong. Defaults to having none.
     /// </summary>
     public ExperimentalFeature ExperimentalFeatures { get; set; }
+
+    /// <summary>
+    /// Whether the agent can suspend (block) via Atomics.wait().
+    /// Defaults to true. Set to false for main-thread-like environments where blocking is not allowed.
+    /// </summary>
+    /// <remarks>
+    /// https://tc39.es/ecma262/#sec-agentcansuspend
+    /// </remarks>
+    public bool AgentCanSuspend { get; set; } = true;
 
     /// <summary>
     /// Called by the <see cref="Engine"/> instance that loads this <see cref="Options" />
@@ -337,6 +348,13 @@ public class Options
         /// to JS errors that can be caught by the script.
         /// </summary>
         public ExceptionHandlerDelegate ExceptionHandler { get; set; } = _defaultExceptionHandler;
+
+        /// <summary>
+        /// Called after a JavaScript error object is created from a CLR exception (when <see cref="ExceptionHandler"/> returns true).
+        /// Allows decorating the error object with additional properties or modifying its state.
+        /// The decorator receives the engine instance, the created error object, and the original CLR exception.
+        /// </summary>
+        public ClrExceptionErrorDecoratorDelegate? ClrExceptionErrorDecorator { get; set; }
 
         /// <summary>
         /// Assemblies to allow scripts to call CLR types directly like <example>System.IO.File</example>.

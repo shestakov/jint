@@ -79,7 +79,8 @@ public static class AstExtensions
             or NodeType.YieldExpression
             or NodeType.TemplateLiteral
             or NodeType.ArrayExpression
-            or NodeType.ObjectExpression)
+            or NodeType.ObjectExpression
+            or NodeType.AwaitExpression)
         {
             var context = engine._activeEvaluationContext ?? new EvaluationContext(engine);
             var result = JintExpression.Build(expression).GetValue(context);
@@ -260,6 +261,14 @@ public static class AstExtensions
             else if (parameter is ClassDeclaration classDeclaration)
             {
                 var name = classDeclaration.Id?.Name;
+                if (name != null)
+                {
+                    target.Add(name);
+                }
+            }
+            else if (parameter is FunctionDeclaration functionDeclaration)
+            {
+                var name = functionDeclaration.Id?.Name;
                 if (name != null)
                 {
                     target.Add(name);

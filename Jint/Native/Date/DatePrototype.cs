@@ -1,6 +1,7 @@
 #pragma warning disable CA1859 // Use concrete types when possible for improved performance -- most of prototype methods return JsValue
 
 using System.Globalization;
+using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Jint.Native.Intl;
@@ -42,7 +43,11 @@ internal sealed class DatePrototype : Prototype
         const PropertyFlag lengthFlags = PropertyFlag.Configurable;
         const PropertyFlag propertyFlags = PropertyFlag.Configurable | PropertyFlag.Writable;
 
-        var properties = new PropertyDictionary(50, checkExistingKeys: false)
+        // B.2.1: toGMTString must be the same function object as toUTCString
+        var toUtcStringFunction = new ClrFunction(Engine, "toUTCString", ToUtcString, 0, lengthFlags);
+        var toUtcStringDescriptor = new PropertyDescriptor(toUtcStringFunction, propertyFlags);
+
+        var properties = new PropertyDictionary(52, checkExistingKeys: false)
         {
             ["constructor"] = new PropertyDescriptor(_constructor, PropertyFlag.NonEnumerable),
             ["toString"] = new PropertyDescriptor(new ClrFunction(Engine, "toString", ToString, 0, lengthFlags), propertyFlags),
@@ -87,9 +92,11 @@ internal sealed class DatePrototype : Prototype
             ["setFullYear"] = new PropertyDescriptor(new ClrFunction(Engine, "setFullYear", SetFullYear, 3, lengthFlags), propertyFlags),
             ["setYear"] = new PropertyDescriptor(new ClrFunction(Engine, "setYear", SetYear, 1, lengthFlags), propertyFlags),
             ["setUTCFullYear"] = new PropertyDescriptor(new ClrFunction(Engine, "setUTCFullYear", SetUTCFullYear, 3, lengthFlags), propertyFlags),
-            ["toUTCString"] = new PropertyDescriptor(new ClrFunction(Engine, "toUTCString", ToUtcString, 0, lengthFlags), propertyFlags),
+            ["toUTCString"] = toUtcStringDescriptor,
+            ["toGMTString"] = toUtcStringDescriptor,
             ["toISOString"] = new PropertyDescriptor(new ClrFunction(Engine, "toISOString", ToISOString, 0, lengthFlags), propertyFlags),
-            ["toJSON"] = new PropertyDescriptor(new ClrFunction(Engine, "toJSON", ToJson, 1, lengthFlags), propertyFlags)
+            ["toJSON"] = new PropertyDescriptor(new ClrFunction(Engine, "toJSON", ToJson, 1, lengthFlags), propertyFlags),
+            ["toTemporalInstant"] = new PropertyDescriptor(new ClrFunction(Engine, "toTemporalInstant", ToTemporalInstant, 0, lengthFlags), propertyFlags)
         };
         SetProperties(properties);
 
@@ -108,13 +115,13 @@ internal sealed class DatePrototype : Prototype
         var oi = thisObject as ObjectInstance;
         if (oi is null)
         {
-            Throw.TypeError(_realm);
+            Throw.TypeError(_realm, "Date.prototype[Symbol.toPrimitive] requires that 'this' be an object");
         }
 
         var hint = arguments.At(0);
         if (!hint.IsString())
         {
-            Throw.TypeError(_realm);
+            Throw.TypeError(_realm, $"Invalid hint: {hint}");
         }
 
         var hintString = hint.ToString();
@@ -129,7 +136,7 @@ internal sealed class DatePrototype : Prototype
         }
         else
         {
-            Throw.TypeError(_realm);
+            Throw.TypeError(_realm, $"Invalid hint: {hint}");
         }
 
         return TypeConverter.OrdinaryToPrimitive(oi, tryFirst);
@@ -247,8 +254,9 @@ internal sealed class DatePrototype : Prototype
         }
 
         // Use Intl.DateTimeFormat for locale-aware formatting
+        // Pass UTC time; DTF handles timezone conversion based on its timeZone option
         var dateTimeFormat = (JsDateTimeFormat) Engine.Realm.Intrinsics.DateTimeFormat.Construct([locales, options], Engine.Realm.Intrinsics.DateTimeFormat);
-        return dateTimeFormat.Format(ToLocalTime(dateInstance));
+        return dateTimeFormat.Format(dateInstance.ToDateTime());
     }
 
     /// <summary>
@@ -285,8 +293,9 @@ internal sealed class DatePrototype : Prototype
         }
 
         // Use Intl.DateTimeFormat for locale-aware formatting
+        // Pass UTC time; DTF handles timezone conversion based on its timeZone option
         var dateTimeFormat = (JsDateTimeFormat) Engine.Realm.Intrinsics.DateTimeFormat.Construct([locales, options], Engine.Realm.Intrinsics.DateTimeFormat);
-        return dateTimeFormat.Format(ToLocalTime(dateInstance));
+        return dateTimeFormat.Format(dateInstance.ToDateTime());
     }
 
     /// <summary>
@@ -323,8 +332,9 @@ internal sealed class DatePrototype : Prototype
         }
 
         // Use Intl.DateTimeFormat for locale-aware formatting
+        // Pass UTC time; DTF handles timezone conversion based on its timeZone option
         var dateTimeFormat = (JsDateTimeFormat) Engine.Realm.Intrinsics.DateTimeFormat.Construct([locales, options], Engine.Realm.Intrinsics.DateTimeFormat);
-        return dateTimeFormat.Format(ToLocalTime(dateInstance));
+        return dateTimeFormat.Format(dateInstance.ToDateTime());
     }
 
     /// <summary>
@@ -339,14 +349,13 @@ internal sealed class DatePrototype : Prototype
             return false;
         }
 
-        // Check date-related properties
+        // Check date-related properties (era is intentionally not checked per spec)
         if (checkDate)
         {
             if (!options.Get("weekday").IsUndefined() ||
                 !options.Get("year").IsUndefined() ||
                 !options.Get("month").IsUndefined() ||
-                !options.Get("day").IsUndefined() ||
-                !options.Get("era").IsUndefined())
+                !options.Get("day").IsUndefined())
             {
                 return false;
             }
@@ -382,7 +391,7 @@ internal sealed class DatePrototype : Prototype
             // Date components
             "weekday", "era", "year", "month", "day",
             // Time components
-            "dayPeriod", "hour", "minute", "second", "fractionalSecondDigits"
+            "dayPeriod", "hour", "minute", "second", "fractionalSecondDigits", "timeZoneName"
         };
         foreach (var option in optionsToCopy)
         {
@@ -878,14 +887,14 @@ internal sealed class DatePrototype : Prototype
         }
 
         var fy = TypeConverter.ToInteger(y);
-        if (y >= 0 && y <= 99)
+        if (fy >= 0 && fy <= 99)
         {
             fy += 1900;
         }
 
         var newDate = MakeDay(fy, MonthFromTime(t), DateFromTime(t));
-        var u = Utc(MakeDate(newDate, TimeWithinDay(t)));
-        ((JsDate) thisObject)._dateValue = u.TimeClip();
+        var u = Utc(MakeDate(newDate, TimeWithinDay(t))).TimeClip();
+        ((JsDate) thisObject)._dateValue = u;
         return u.ToJsValue();
     }
 
@@ -934,7 +943,7 @@ internal sealed class DatePrototype : Prototype
         var t = thisTime;
         if (t.IsNaN)
         {
-            Throw.RangeError(_realm);
+            Throw.RangeError(_realm, "Invalid time value");
         }
 
         if (((JsDate) thisObject).DateTimeRangeValid)
@@ -975,6 +984,30 @@ internal sealed class DatePrototype : Prototype
         }
 
         return Invoke(o, "toISOString", Arguments.Empty);
+    }
+
+    /// <summary>
+    /// https://tc39.es/proposal-temporal/#sec-date.prototype.totemporalinstant
+    /// </summary>
+    private JsValue ToTemporalInstant(JsValue thisObject, JsCallArguments arguments)
+    {
+        // 1. Let dateObject be the this value.
+        // 2. Perform ? RequireInternalSlot(dateObject, [[DateValue]]).
+        var tv = ThisTimeValue(thisObject);
+
+        // 3. Let t be dateObject.[[DateValue]].
+        // 4. Let ns be ? NumberToBigInt(t) × ℤ(10**6).
+        if (tv.IsNaN)
+        {
+            Throw.RangeError(_realm, "Invalid time value");
+            return default;
+        }
+
+        // Convert milliseconds to nanoseconds (multiply by 10^6)
+        var epochNanoseconds = new BigInteger(tv.Value) * 1_000_000;
+
+        // 5. Return ! CreateTemporalInstant(ns).
+        return _realm.Intrinsics.TemporalInstant.Construct(epochNanoseconds);
     }
 
     private const int HoursPerDay = 24;
@@ -1262,8 +1295,14 @@ internal sealed class DatePrototype : Prototype
 
     internal DatePresentation Utc(DatePresentation t)
     {
+        // t represents local time encoded as epoch milliseconds. GetUtcOffset treats
+        // its argument as a UTC instant, so a single-pass conversion uses the wrong
+        // DST offset near transitions. Use a two-pass approach matching the ES spec's
+        // UTC(t): first estimate UTC, then get the correct offset at that UTC instant.
         var offset = _timeSystem.GetUtcOffset(t.Value).TotalMilliseconds;
-        return t - offset;
+        var estimatedUtc = (t - offset).Value;
+        var refinedOffset = _timeSystem.GetUtcOffset(estimatedUtc).TotalMilliseconds;
+        return t - refinedOffset;
     }
 
     private static int HourFromTime(DatePresentation t)
@@ -1409,7 +1448,7 @@ internal sealed class DatePrototype : Prototype
 
     private static readonly int[] kDaysInMonths = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
-    private static Date YearMonthDayFromTime(DatePresentation t) => YearMonthDayFromDays((long) System.Math.Floor(t.Value / 1000 / 60 / 60 / 24d));
+    private static Date YearMonthDayFromTime(DatePresentation t) => YearMonthDayFromDays((long) System.Math.Floor((double) t.Value / MsPerDay));
 
     private static Date YearMonthDayFromDays(long days)
     {
@@ -1543,7 +1582,21 @@ internal sealed class DatePrototype : Prototype
         var offsetMin = MinFromTime(absOffset).ToString("00", CultureInfo.InvariantCulture);
         var offsetHour = HourFromTime(absOffset).ToString("00", CultureInfo.InvariantCulture);
 
-        var tzName = " (" + _timeSystem.DefaultTimeZone.StandardName + ")";
+        var timeZone = _timeSystem.DefaultTimeZone;
+        string timeZoneName;
+        // DateTimeOffset.FromUnixTimeMilliseconds only handles years 0001-9999, represented as
+        // -62135596800000 ms (DateTime.MinValue) to 253402300799999 ms (DateTime.MaxValue)
+        if (tv.DateTimeRangeValid)
+        {
+            var dateTimeOffset = DateTimeOffset.FromUnixTimeMilliseconds(tv.Value);
+            timeZoneName = timeZone.IsDaylightSavingTime(dateTimeOffset) ? timeZone.DaylightName : timeZone.StandardName;
+        }
+        else
+        {
+            timeZoneName = timeZone.StandardName;
+        }
+
+        var tzName = " (" + timeZoneName + ")";
 
         return offsetSign + offsetHour + offsetMin + tzName;
     }
