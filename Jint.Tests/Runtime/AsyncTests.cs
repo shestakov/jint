@@ -2108,6 +2108,32 @@ public class AsyncTests
         Assert.Equal("10,20,30", result.AsString());
     }
 
+    [Fact]
+    public void AsyncArrowConciseBodyParameterSurvivesAwaitInsideArrayMap()
+    {
+        // Regression: an async arrow with a concise body returning an object literal
+        // that contains an `await` expression used to lose its parameter binding when
+        // invoked through Array.prototype.map. The closure passed to AsyncFunctionStart
+        // was re-running FunctionDeclarationInstantiation on every await resumption,
+        // re-binding `s` from map's pooled-and-already-recycled arguments array.
+        var engine = new Engine();
+        var result = engine.Evaluate("""
+            (async function() {
+                async function f() { return Promise.resolve("async"); }
+                const arr = ["string1"];
+
+                const conciseMap = await Promise.all(arr.map(async s => ({ string: s, computedAsync: await f() })));
+                const blockMap   = await Promise.all(arr.map(async s => { return ({ string: s, computedAsync: await f() }); }));
+                const noAwaitMap = await Promise.all(arr.map(async s => ({ string: s, computedAsync: s })));
+                const direct    = await (async s => ({ string: s, computedAsync: await f() }))("string1");
+
+                return [conciseMap[0].string, blockMap[0].string, noAwaitMap[0].string, direct.string].join(",");
+            })()
+            """);
+        result = result.UnwrapIfPromise();
+        Assert.Equal("string1,string1,string1,string1", result.AsString());
+    }
+
     class TestAsyncClass
     {
         private readonly ConcurrentBag<string> _values = new();

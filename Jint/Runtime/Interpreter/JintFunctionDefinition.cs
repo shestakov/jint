@@ -45,15 +45,18 @@ internal sealed class JintFunctionDefinition
             _bodyExpression ??= JintExpression.Build((Expression) Function.Body);
             if (Function.Async)
             {
-                // local copies to prevent capturing closure created on top of method
-                var function = functionObject;
-                var jsValues = argumentsList;
+                // FunctionDeclarationInstantiation runs once at function entry per spec,
+                // not on every await resumption. Running it inside the resumption closure
+                // rebinds parameters from the caller's (possibly pooled/recycled) argument
+                // array — e.g. Array.prototype.map returns its rented args to the pool as
+                // soon as the synchronous portion of the async callback returns, so a later
+                // resume would re-read stale values.
+                argumentsInstance = context.Engine.FunctionDeclarationInstantiation(functionObject, argumentsList);
 
                 var promiseCapability = PromiseConstructor.NewPromiseCapability(context.Engine, context.Engine.Realm.Intrinsics.Promise);
                 // Expression bodies don't have a statement list (used only for resumption)
                 AsyncFunctionStart(context, promiseCapability, body: null, context =>
                 {
-                    context.Engine.FunctionDeclarationInstantiation(function, jsValues);
                     context.RunBeforeExecuteStatementChecks(Function.Body);
                     var jsValue = _bodyExpression.GetValue(context).Clone();
 
@@ -85,16 +88,16 @@ internal sealed class JintFunctionDefinition
         {
             if (Function.Async)
             {
-                // local copies to prevent capturing closure created on top of method
-                var function = functionObject;
-                var arguments = argumentsList;
+                // Per spec, FunctionDeclarationInstantiation runs once at function entry,
+                // before AsyncFunctionStart — not inside the resumable body closure.
+                // See concise-body branch above for the failure mode this avoids.
+                argumentsInstance = context.Engine.FunctionDeclarationInstantiation(functionObject, argumentsList);
 
                 var promiseCapability = PromiseConstructor.NewPromiseCapability(context.Engine, context.Engine.Realm.Intrinsics.Promise);
                 // Each async function invocation needs its own JintStatementList to track its own position
                 var bodyStatementList = new JintStatementList(Function);
                 AsyncFunctionStart(context, promiseCapability, bodyStatementList, context =>
                 {
-                    context.Engine.FunctionDeclarationInstantiation(function, arguments);
                     return bodyStatementList.Execute(context);
                 });
                 result = new Completion(CompletionType.Return, promiseCapability.PromiseInstance, Function.Body);
