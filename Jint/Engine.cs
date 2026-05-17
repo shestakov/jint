@@ -1841,7 +1841,10 @@ public sealed partial class Engine : IDisposable
         }
         finally
         {
-            CallStack.Pop();
+            if (CallStack.Count > 0)
+            {
+                CallStack.Pop();
+            }
         }
 
         return result;
