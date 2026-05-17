@@ -8,7 +8,8 @@ public enum PauseType
     Skip,
     Step,
     Break,
-    DebuggerStatement
+    DebuggerStatement,
+    Exception,
 }
 
 public class DebugHandler
@@ -51,11 +52,44 @@ public class DebugHandler
     /// </summary>
     public event DebugEventHandler? Skip;
 
+    /// <summary>
+    /// Triggered before a JavaScript <c>throw</c> statement propagates its
+    /// thrown value. The handler's <see cref="DebugInformation.Exception"/>
+    /// holds the value. The handler returns a <see cref="StepMode"/> just
+    /// like other debug events; <see cref="StepMode.None"/> resumes the throw.
+    /// </summary>
+    public event DebugEventHandler? Exception;
+
     internal DebugHandler(Engine engine, StepMode initialStepMode)
     {
         _engine = engine;
         HandleNewStepMode(initialStepMode);
     }
+
+    /// <summary>
+    /// Schedules the engine to pause on the next step-eligible execution
+    /// point — equivalent to <see cref="StepMode.Into"/> taking effect
+    /// immediately. Safe to call from a thread other than the engine thread.
+    /// </summary>
+    public void RequestPause()
+    {
+        // Volatile write so the engine thread observes the new depth on its
+        // next IsStepping check without needing a memory barrier.
+        System.Threading.Volatile.Write(ref _steppingDepth, int.MaxValue);
+    }
+
+    // ===== Try-block depth tracking (for pause-on-uncaught-exception) =====
+    // Incremented when a JintTryStatement begins executing its try-block,
+    // decremented when the block exits (either normally or via a throw that
+    // the catch will handle). A throw whose depth is 0 is considered uncaught.
+    // The counter does NOT include the catch / finally blocks — that's the
+    // whole point: a re-throw from inside `catch` reads the OUTER tries,
+    // matching the spec's "uncaught" semantics.
+    private int _tryBlockDepth;
+
+    internal void EnterTryBlock() => _tryBlockDepth++;
+    internal void ExitTryBlock() => _tryBlockDepth--;
+    internal bool IsInsideTryBlock => _tryBlockDepth > 0;
 
     private bool IsStepping => _engine.CallStack.Count <= _steppingDepth;
 
@@ -93,6 +127,13 @@ public class DebugHandler
             throw new DebugEvaluationException("Jint has no active evaluation context");
         }
         var callStackSize = _engine.CallStack.Count;
+        // Save the entire execution context. If the watch / breakpoint
+        // condition enters a function call or any nested environment, a
+        // CLR-side throw mid-execution would leave the engine pointing at a
+        // stale LexicalEnvironment / VariableEnvironment / PrivateEnvironment,
+        // and the next FunctionDeclarationInstantiation cast to FunctionEnvironment
+        // would fail. We restore the snapshot in `finally`.
+        var savedContext = _engine.ExecutionContext;
 
         var list = new JintStatementList(null, preparedScript.Program.Body);
         Completion result;
@@ -112,6 +153,14 @@ public class DebugHandler
             {
                 _engine.CallStack.Pop();
             }
+            // Restore the lexical / variable / private environments. A
+            // CLR-side throw mid-evaluation (e.g. inside an inner function
+            // call) would otherwise leave a stale environment on the
+            // ExecutionContext, breaking subsequent FunctionDeclarationInstantiation
+            // (which casts LexicalEnvironment to FunctionEnvironment).
+            _engine.UpdateLexicalEnvironment(savedContext.LexicalEnvironment);
+            _engine.UpdateVariableEnvironment(savedContext.VariableEnvironment);
+            _engine.UpdatePrivateEnvironment(savedContext.PrivateEnvironment);
         }
 
         if (result.Type == CompletionType.Throw)
@@ -240,9 +289,55 @@ public class DebugHandler
             PauseType.Step => Step?.Invoke(_engine, info),
             PauseType.Break => Break?.Invoke(_engine, info),
             PauseType.DebuggerStatement => Break?.Invoke(_engine, info),
+            PauseType.Exception => Exception?.Invoke(_engine, info),
             _ => throw new ArgumentException("Invalid pause type", nameof(type))
         };
 
+        HandleNewStepMode(result);
+    }
+
+    /// <summary>
+    /// Called by the interpreter when a JavaScript <c>throw</c> statement is
+    /// about to propagate. Fires the <see cref="Exception"/> event, giving a
+    /// connected debugger the chance to pause before the stack unwinds. If
+    /// no handler is subscribed the call is effectively a no-op.
+    /// </summary>
+    internal void OnException(JsValue exception, in SourceLocation location)
+    {
+        if (Exception is null) return; // hot path — no debugger interested
+        if (_paused) return;            // re-entrance guard (same as OnStep)
+        _paused = true;
+        try
+        {
+            CurrentLocation = location;
+            Pause(PauseType.Exception, node: null, location, exception: exception, isUncaught: !IsInsideTryBlock);
+        }
+        finally
+        {
+            _paused = false;
+        }
+    }
+
+    private void Pause(
+        PauseType type,
+        Node? node,
+        in SourceLocation location,
+        JsValue exception,
+        bool isUncaught)
+    {
+        var info = new DebugInformation(
+            engine: _engine,
+            currentNode: node,
+            currentLocation: location,
+            returnValue: null,
+            currentMemoryUsage: _engine.CurrentMemoryUsage,
+            pauseType: type,
+            breakPoint: null,
+            exception: exception,
+            isUncaught: isUncaught
+        );
+
+        var result = Exception?.Invoke(_engine, info);
         HandleNewStepMode(result);
     }
 

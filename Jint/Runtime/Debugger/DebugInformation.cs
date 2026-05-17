@@ -17,7 +17,9 @@ public sealed class DebugInformation : EventArgs
         JsValue? returnValue,
         long currentMemoryUsage,
         PauseType pauseType,
-        BreakPoint? breakPoint)
+        BreakPoint? breakPoint,
+        JsValue? exception = null,
+        bool isUncaught = false)
     {
         _engine = engine;
         CurrentNode = currentNode;
@@ -26,6 +28,8 @@ public sealed class DebugInformation : EventArgs
         CurrentMemoryUsage = currentMemoryUsage;
         PauseType = pauseType;
         BreakPoint = breakPoint;
+        Exception = exception;
+        IsUncaught = isUncaught;
     }
 
     /// <summary>
@@ -77,4 +81,18 @@ public sealed class DebugInformation : EventArgs
     /// This is null if execution is not at a return point.
     /// </summary>
     public JsValue? ReturnValue => CurrentCallFrame.ReturnValue;
+
+    /// <summary>
+    /// The thrown value when <see cref="PauseType"/> is
+    /// <see cref="PauseType.Exception"/>. Null otherwise.
+    /// </summary>
+    public JsValue? Exception { get; }
+
+    /// <summary>
+    /// True when the throw site is not inside any active <c>try</c> block —
+    /// i.e. there's no <c>catch</c> up the call stack that can handle it.
+    /// Only meaningful when <see cref="PauseType"/> is
+    /// <see cref="PauseType.Exception"/>.
+    /// </summary>
+    public bool IsUncaught { get; }
 }

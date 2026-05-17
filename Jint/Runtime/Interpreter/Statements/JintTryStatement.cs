@@ -50,7 +50,22 @@ internal sealed class JintTryStatement : JintStatement<TryStatement>
             return ExecuteFinallyResume(context, suspendable);
         }
 
-        var b = _block.Execute(context);
+        // Track try-block depth so the debugger can distinguish caught from
+        // uncaught exceptions. We bump the counter only around the try-block
+        // proper — catch and finally bodies execute with the counter dropped,
+        // so a re-throw inside a catch reads the OUTER tries' depth and is
+        // classified as uncaught when there's no outer try to catch it.
+        var debugMode = engine.Options.Debugger.Enabled;
+        if (debugMode) engine.Debugger.EnterTryBlock();
+        Completion b;
+        try
+        {
+            b = _block.Execute(context);
+        }
+        finally
+        {
+            if (debugMode) engine.Debugger.ExitTryBlock();
+        }
 
         if (b.Type == CompletionType.Throw)
         {

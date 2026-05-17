@@ -16,6 +16,17 @@ internal sealed class JintThrowStatement : JintStatement<ThrowStatement>
 
     protected override Completion ExecuteInternal(EvaluationContext context)
     {
-        return new Completion(CompletionType.Throw, _argument.GetValue(context), _argument._expression);
+        var error = _argument.GetValue(context);
+
+        // Notify any attached debugger BEFORE we propagate the throw — gives
+        // pause-on-exception a chance to capture the live call frame + locals.
+        // The check is hoisted so production engines (no Exception handler)
+        // pay only a single null-comparison.
+        if (context.Engine.Options.Debugger.Enabled)
+        {
+            context.Engine.Debugger.OnException(error, _argument._expression.Location);
+        }
+
+        return new Completion(CompletionType.Throw, error, _argument._expression);
     }
 }
