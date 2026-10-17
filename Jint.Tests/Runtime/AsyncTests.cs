@@ -2134,6 +2134,29 @@ public class AsyncTests
         Assert.Equal("string1,string1,string1,string1", result.AsString());
     }
 
+    [Fact]
+    public void VariableDeclarationInitializersBeforeAwaitRunOnce()
+    {
+        // Regression: resuming an async function replays the suspended statement, and a
+        // declaration with several declarators re-ran every initializer preceding the awaited one.
+        var engine = new Engine();
+        var result = engine.Evaluate("""
+            (async function() {
+                var calls = 0;
+                function mint() { calls++; return calls; }
+                async function inner(x) { await null; return x; }
+
+                let first = mint(), second = await inner(first), third = mint(), fourth = await inner(third);
+                const { a } = { a: mint() }, b = await inner(a);
+                var v = mint(), w = await inner(v);
+
+                return [first, second, third, fourth, a, b, v, w, calls].join(",");
+            })()
+            """);
+        result = result.UnwrapIfPromise();
+        Assert.Equal("1,1,2,2,3,3,4,4,4", result.AsString());
+    }
+
     class TestAsyncClass
     {
         private readonly ConcurrentBag<string> _values = new();

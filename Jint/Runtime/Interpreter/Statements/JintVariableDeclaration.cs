@@ -57,8 +57,17 @@ internal sealed class JintVariableDeclaration : JintStatement<VariableDeclaratio
     protected override Completion ExecuteInternal(EvaluationContext context)
     {
         var engine = context.Engine;
-        foreach (var declaration in _declarations)
+        var suspendable = engine.ExecutionContext.Suspendable;
+        var startIndex = 0;
+        if (suspendable is { IsResuming: true }
+            && suspendable.Data.TryGet(this, out VariableDeclarationSuspendData? suspendData))
         {
+            startIndex = suspendData!.DeclarationIndex;
+        }
+
+        for (var i = startIndex; i < _declarations.Length; i++)
+        {
+            var declaration = _declarations[i];
             if (_statement.Kind != VariableDeclarationKind.Var && declaration.Left != null)
             {
                 var lhs = (Reference) declaration.Left.Evaluate(context);
@@ -77,6 +86,7 @@ internal sealed class JintVariableDeclaration : JintStatement<VariableDeclaratio
                     // Check for generator suspension after evaluating initializer
                     if (context.IsSuspended())
                     {
+                        SaveDeclarationIndex(suspendable, i);
                         engine._referencePool.Return(lhs);
                         return new Completion(CompletionType.Normal, value, _statement);
                     }
@@ -103,6 +113,7 @@ internal sealed class JintVariableDeclaration : JintStatement<VariableDeclaratio
                     // Check for generator suspension after evaluating initializer
                     if (context.IsSuspended())
                     {
+                        SaveDeclarationIndex(suspendable, i);
                         return new Completion(CompletionType.Normal, value, _statement);
                     }
 
@@ -116,6 +127,7 @@ internal sealed class JintVariableDeclaration : JintStatement<VariableDeclaratio
                     // Check for async/generator suspension after processing patterns
                     if (context.IsSuspended())
                     {
+                        SaveDeclarationIndex(suspendable, i);
                         return new Completion(CompletionType.Normal, JsValue.Undefined, _statement);
                     }
                 }
@@ -143,6 +155,7 @@ internal sealed class JintVariableDeclaration : JintStatement<VariableDeclaratio
                     // Check for generator suspension after evaluating initializer
                     if (context.IsSuspended())
                     {
+                        SaveDeclarationIndex(suspendable, i);
                         engine._referencePool.Return(lhs);
                         return new Completion(CompletionType.Normal, value, _statement);
                     }
@@ -155,9 +168,26 @@ internal sealed class JintVariableDeclaration : JintStatement<VariableDeclaratio
                     engine.PutValue(lhs, value);
                     engine._referencePool.Return(lhs);
                 }
+                else if (context.IsSuspended())
+                {
+                    SaveDeclarationIndex(suspendable, i);
+                    return new Completion(CompletionType.Normal, JsValue.Undefined, _statement);
+                }
             }
         }
 
+        suspendable?.Data.Clear(this);
+
         return Completion.Empty();
+    }
+
+    private void SaveDeclarationIndex(ISuspendable? suspendable, int index)
+    {
+        if (suspendable is null)
+        {
+            return;
+        }
+
+        suspendable.Data.GetOrCreate<VariableDeclarationSuspendData>(this).DeclarationIndex = index;
     }
 }

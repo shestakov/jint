@@ -137,6 +137,11 @@ internal sealed class SequenceSuspendData : SuspendData
     public int ExpressionIndex { get; set; }
 }
 
+internal sealed class VariableDeclarationSuspendData : SuspendData
+{
+    public int DeclarationIndex { get; set; }
+}
+
 internal sealed class SuspendDataDictionary
 {
     /// <summary>
