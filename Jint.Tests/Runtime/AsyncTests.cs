@@ -2216,6 +2216,39 @@ public class AsyncTests
         Assert.Equal("before,a,aaa,d,dd2,dd1 undefined", result.AsString());
     }
 
+    [Fact]
+    public void AwaitInIfBranchEvaluatesTheTestOnce()
+    {
+        // Regression: resuming from an await inside an if branch evaluated the test again on every
+        // resume, repeating its side effects (a minifier merges the statement preceding an if into
+        // its test, so a list filled before the if was filled again after each await).
+        var engine = new Engine();
+        var result = engine.Evaluate("""
+            (async function () {
+                var log = [];
+                var tests = 0;
+                function test(value) { tests++; return value; }
+
+                if (test(true)) { await null; log.push("then"); } else { log.push("else"); }
+                if (test(false)) { log.push("then2"); } else { await null; await null; log.push("else2"); }
+                if (test(false)) { log.push("then3"); } else if (test(true)) { await null; log.push("else-if"); }
+
+                var list = [];
+                if ([1, 2].forEach(function (x) { list.push(x); }), list.length > 0) {
+                    await null;
+                    await null;
+                }
+
+                for (var i = 0; i < 2; i++) {
+                    if (test(true)) { await null; log.push("loop" + i); }
+                }
+                return log.join(",") + " tests=" + tests + " list=" + list.length;
+            })()
+            """);
+        result = result.UnwrapIfPromise();
+        Assert.Equal("then,else2,else-if,loop0,loop1 tests=6 list=2", result.AsString());
+    }
+
     class TestAsyncClass
     {
         private readonly ConcurrentBag<string> _values = new();

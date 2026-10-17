@@ -24,7 +24,17 @@ internal sealed class JintIfStatement : JintStatement<IfStatement>
     protected override Completion ExecuteInternal(EvaluationContext context)
     {
         Completion result;
-        if (_test.GetBooleanValue(context))
+        var resumeNode = GetResumeNode(context);
+
+        if (resumeNode is not null && IsNodeInsideRange(resumeNode, _statement.Consequent.Range))
+        {
+            result = _statementConsequent.Execute(context);
+        }
+        else if (resumeNode is not null && _statement.Alternate is not null && IsNodeInsideRange(resumeNode, _statement.Alternate.Range))
+        {
+            result = _alternate!.Value.Execute(context);
+        }
+        else if (_test.GetBooleanValue(context))
         {
             // B.3.2/B.3.3: IfStatement function declarations need runtime AnnexB handling
             if (_consequentIsFunctionDecl && !StrictModeScope.IsStrictModeCode)
@@ -101,5 +111,22 @@ internal sealed class JintIfStatement : JintStatement<IfStatement>
         }
 
         return new Completion(CompletionType.Normal, JsEmpty.Instance, funcDecl);
+    }
+
+    private static Node? GetResumeNode(EvaluationContext context)
+    {
+        var suspendable = context.Engine.ExecutionContext.Suspendable;
+        if (suspendable is not { IsResuming: true, LastSuspensionNode: not null })
+        {
+            return null;
+        }
+
+        return suspendable.LastSuspensionNode as Node
+            ?? (suspendable.LastSuspensionNode as JintExpression)?._expression as Node;
+    }
+
+    private static bool IsNodeInsideRange(Node node, in Acornima.Range range)
+    {
+        return range.Start <= node.Range.Start && node.Range.End <= range.End;
     }
 }
