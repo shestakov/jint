@@ -2157,6 +2157,36 @@ public class AsyncTests
         Assert.Equal("1,1,2,2,3,3,4,4,4", result.AsString());
     }
 
+    [Fact]
+    public void ContinueAfterAwaitStartsNextIterationFromFirstStatement()
+    {
+        // Regression (HR-1003): the loop body's statement list kept the resume position of the
+        // await when the body left through `continue`, so the next iteration skipped the
+        // statements before the await and read a let/const binding still in its TDZ.
+        var engine = new Engine();
+        var result = engine.Evaluate("""
+            (async function () {
+                var log = [];
+                for (let item of [1, 2, 3]) {
+                    log.push("decl" + item);
+                    let x = "value";
+                    await Promise.resolve();
+                    if (x !== "value") throw new Error("unreachable");
+                    continue;
+                }
+                for (let i = 0; i < 2; i++) {
+                    const y = "const" + i;
+                    await Promise.resolve();
+                    log.push(y);
+                    if (i === 0) continue;
+                }
+                return log.join(",");
+            })()
+            """);
+        result = result.UnwrapIfPromise();
+        Assert.Equal("decl1,decl2,decl3,const0,const1", result.AsString());
+    }
+
     class TestAsyncClass
     {
         private readonly ConcurrentBag<string> _values = new();

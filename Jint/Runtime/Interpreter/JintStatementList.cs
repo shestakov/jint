@@ -106,6 +106,7 @@ internal sealed class JintStatementList
 
                 if (c.Type != CompletionType.Normal)
                 {
+                    ResetUnlessAsyncFunctionBody(context);
                     return c.UpdateEmpty(sl.Value);
                 }
 
@@ -121,11 +122,7 @@ internal sealed class JintStatementList
             // But don't reset for async function/module bodies - if pending promise reactions
             // call AsyncFunctionResume after completion, we shouldn't re-execute from start.
             // Async bodies should complete exactly once.
-            var currentAsyncFn = context.Engine.ExecutionContext.AsyncFunction;
-            if (currentAsyncFn?._body != this)
-            {
-                _index = 0;
-            }
+            ResetUnlessAsyncFunctionBody(context);
         }
         catch (Exception ex)
         {
@@ -272,5 +269,13 @@ internal sealed class JintStatementList
     public void Reset()
     {
         _index = 0;
+    }
+
+    private void ResetUnlessAsyncFunctionBody(EvaluationContext context)
+    {
+        if (context.Engine.ExecutionContext.AsyncFunction?._body != this)
+        {
+            _index = 0;
+        }
     }
 }
