@@ -2187,6 +2187,35 @@ public class AsyncTests
         Assert.Equal("decl1,decl2,decl3,const0,const1", result.AsString());
     }
 
+    [Fact]
+    public void AwaitInForInitResumesInTheSameLoopEnvironment()
+    {
+        // Regression: resuming from an await inside a for initialization rebuilt the loop environment with
+        // uninitialized bindings and re-ran the head, and saving the still-uninitialized bindings
+        // threw a ReferenceError that reset the enclosing statement list, so the statements before
+        // the loop ran again.
+        var engine = new Engine();
+        var result = engine.Evaluate("""
+            (async function () {
+                var log = [];
+                function mint(tag) { log.push(tag); return tag; }
+                async function inner(x) { await null; return x; }
+
+                log.push("before");
+                for (let a = mint("a"), b = await inner(a), c = await inner(b); a !== "done"; a = "done") {
+                    log.push(a + b + c);
+                }
+                for (const d = mint("d"), e = await inner(d), n = [1, 2]; n.length; n.pop()) {
+                    await inner(n.length);
+                    log.push(d + e + n.length);
+                }
+                return log.join(",") + " " + typeof a;
+            })()
+            """);
+        result = result.UnwrapIfPromise();
+        Assert.Equal("before,a,aaa,d,dd2,dd1 undefined", result.AsString());
+    }
+
     class TestAsyncClass
     {
         private readonly ConcurrentBag<string> _values = new();

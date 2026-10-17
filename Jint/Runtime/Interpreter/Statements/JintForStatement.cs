@@ -85,45 +85,59 @@ internal sealed class JintForStatement : JintStatement<ForStatement>
 
         // Only skip init when resuming from body/test/update, NOT from init
         var resumingInLoop = resumeNode is not null && IsNodeInsideForStatementExcludingInit(resumeNode);
+        var resumingInInit = resumeNode is not null && !resumingInLoop && IsNodeInsideInit(resumeNode);
 
         ForLoopSuspendData? suspendData = null;
-        if (resumingInLoop && _boundNames != null)
+        if ((resumingInLoop || resumingInInit) && _boundNames != null)
         {
             suspendable?.Data.TryGet(this, out suspendData);
         }
 
         if (_boundNames != null)
         {
-            oldEnv = engine.ExecutionContext.LexicalEnvironment;
-            loopEnv = JintEnvironment.NewDeclarativeEnvironment(engine, oldEnv);
-            var loopEnvRec = loopEnv;
-            var kind = _initStatement!._statement.Kind;
-            for (var i = 0; i < _boundNames.Count; i++)
+            if (resumingInInit && suspendData?.LoopEnvironment is not null)
             {
-                var name = _boundNames[i];
-                // const, using, and await using all create immutable bindings
-                if (kind is VariableDeclarationKind.Const or VariableDeclarationKind.Using or VariableDeclarationKind.AwaitUsing)
+                loopEnv = suspendData.LoopEnvironment;
+                oldEnv = suspendData.OuterEnvironment ?? engine.ExecutionContext.LexicalEnvironment;
+                if (!ReferenceEquals(engine.ExecutionContext.LexicalEnvironment, loopEnv))
                 {
-                    loopEnvRec.CreateImmutableBinding(name);
-                }
-                else
-                {
-                    loopEnvRec.CreateMutableBinding(name);
+                    engine.UpdateLexicalEnvironment(loopEnv);
                 }
             }
-
-            engine.UpdateLexicalEnvironment(loopEnv);
-
-            // Restore loop variable values if resuming
-            if (resumingInLoop && suspendData?.BoundValues is not null)
+            else
             {
-                foreach (var kvp in suspendData.BoundValues)
+                oldEnv = engine.ExecutionContext.LexicalEnvironment;
+                loopEnv = JintEnvironment.NewDeclarativeEnvironment(engine, oldEnv);
+                var loopEnvRec = loopEnv;
+                var kind = _initStatement!._statement.Kind;
+                for (var i = 0; i < _boundNames.Count; i++)
                 {
-                    loopEnvRec.InitializeBinding(kvp.Key, kvp.Value, DisposeHint.Normal);
+                    var name = _boundNames[i];
+                    // const, using, and await using all create immutable bindings
+                    if (kind is VariableDeclarationKind.Const or VariableDeclarationKind.Using or VariableDeclarationKind.AwaitUsing)
+                    {
+                        loopEnvRec.CreateImmutableBinding(name);
+                    }
+                    else
+                    {
+                        loopEnvRec.CreateMutableBinding(name);
+                    }
+                }
+
+                engine.UpdateLexicalEnvironment(loopEnv);
+
+                // Restore loop variable values if resuming
+                if (resumingInLoop && suspendData?.BoundValues is not null)
+                {
+                    foreach (var kvp in suspendData.BoundValues)
+                    {
+                        loopEnvRec.InitializeBinding(kvp.Key, kvp.Value, DisposeHint.Normal);
+                    }
                 }
             }
         }
 
+        var suspendedInInit = false;
         var completion = Completion.Empty();
         try
         {
@@ -147,6 +161,7 @@ internal sealed class JintForStatement : JintStatement<ForStatement>
                     // Check for async suspension in init statement
                     if (context.IsSuspended())
                     {
+                        suspendedInInit = true;
                         return new Completion(CompletionType.Return, JsValue.Undefined, _statement);
                     }
                 }
@@ -162,17 +177,25 @@ internal sealed class JintForStatement : JintStatement<ForStatement>
                 // Save loop variable values if generator/async function is suspended (don't save on normal completion)
                 if (context.IsSuspended() && _boundNames != null && suspendable is not null)
                 {
-                    // Use the CURRENT lexical environment, not loopEnv, because
-                    // CreatePerIterationEnvironment may have created new environments during the loop
-                    var currentEnv = engine.ExecutionContext.LexicalEnvironment;
-
                     var data = suspendable.Data.GetOrCreate<ForLoopSuspendData>(this);
-                    data.BoundValues ??= new Dictionary<Key, JsValue>();
-                    for (var i = 0; i < _boundNames.Count; i++)
+                    if (suspendedInInit)
                     {
-                        var name = _boundNames[i];
-                        var value = currentEnv.GetBindingValue(name, strict: false);
-                        data.BoundValues[name] = value;
+                        data.LoopEnvironment = loopEnv;
+                        data.OuterEnvironment = oldEnv;
+                    }
+                    else
+                    {
+                        // Use the CURRENT lexical environment, not loopEnv, because
+                        // CreatePerIterationEnvironment may have created new environments during the loop
+                        var currentEnv = engine.ExecutionContext.LexicalEnvironment;
+
+                        data.BoundValues ??= new Dictionary<Key, JsValue>();
+                        for (var i = 0; i < _boundNames.Count; i++)
+                        {
+                            var name = _boundNames[i];
+                            var value = currentEnv.GetBindingValue(name, strict: false);
+                            data.BoundValues[name] = value;
+                        }
                     }
                 }
                 else if (!context.IsSuspended())
@@ -225,6 +248,18 @@ internal sealed class JintForStatement : JintStatement<ForStatement>
         }
 
         return false;
+    }
+
+    private bool IsNodeInsideInit(Node node)
+    {
+        if (_statement.Init is null)
+        {
+            return false;
+        }
+
+        var nodeRange = node.Range;
+        var initRange = _statement.Init.Range;
+        return initRange.Start <= nodeRange.Start && nodeRange.End <= initRange.End;
     }
 
     /// <summary>

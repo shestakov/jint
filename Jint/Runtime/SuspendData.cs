@@ -72,6 +72,10 @@ internal sealed class ForLoopSuspendData : SuspendData
     /// The saved values of loop variables (let bindings in for loop init).
     /// </summary>
     public Dictionary<Key, JsValue>? BoundValues { get; set; }
+
+    public DeclarativeEnvironment? LoopEnvironment { get; set; }
+
+    public Jint.Runtime.Environments.Environment? OuterEnvironment { get; set; }
 }
 
 /// <summary>
